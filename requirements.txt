@@ -1,4 +1,5 @@
-flask
+fastapi
 uvicorn
-requests
-
+pydantic
+sqlalchemy
+mysql-connector-python
