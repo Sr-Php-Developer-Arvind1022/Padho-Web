@@ -1,7 +1,11 @@
 from fastapi import FastAPI, Request, Body
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-
+from apis.api import router as api_router
+# from core.config import API_V1_STR, PROJECT_NAME
+from fastapi.middleware.cors import CORSMiddleware
+import os
+from dotenv import load_dotenv
 
 app = FastAPI()
 origins = ["*"] 
@@ -13,6 +17,8 @@ app.add_middleware(
     allow_methods=["*"],              # 👈 Allow all methods like GET, POST
     allow_headers=["*"],              # 👈 Allow all headers
 )
+
+app.include_router(api_router) 
 
 @app.get("/")
 def read_root():
