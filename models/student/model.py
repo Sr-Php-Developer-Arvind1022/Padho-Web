@@ -8,3 +8,14 @@ from fastapi import UploadFile
 class StudentLogin(BaseModel):
     email: str
     password: str
+
+class StudentRegister(BaseModel):
+    name: str
+    email: str
+    role: str
+    password: str
+    date_of_birth: str
+    grade: str
+    phone: str
+    address: str
+    parent_email: str

@@ -15,7 +15,7 @@ REFRESH_TOKEN_EXPIRE_DAYS = 7
 # oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 # OAuth2PasswordBearer instance to handle token from header
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=True)
 
 
 # def generate_access_token(email: str) -> str:
@@ -124,6 +124,9 @@ def verify_access_token(token: str = Depends(oauth2_scheme)):
     Verifies the access token and checks for inactivity.
     """
     try:
+        # Check if token is None or empty
+        if not token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token not provided")
         
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         
@@ -151,6 +154,10 @@ def verify_access_token(token: str = Depends(oauth2_scheme)):
 def refresh_access_token(refresh_token):
     """Refresh access token using a valid refresh token."""
     try:
+        # Check if refresh_token is None or empty
+        if not refresh_token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token not provided")
+        
         payload = jwt.decode(refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("user_id","")
         username = payload.get("username","")
@@ -183,6 +190,10 @@ def refresh_access_token(refresh_token):
 # Function to get user_id from JWT token
 def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
+        # Check if token is None or empty
+        if not token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token not provided")
+        
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: int = payload.get("user_id","")
         
@@ -196,6 +207,10 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
 def get_current_role(token: str = Depends(oauth2_scheme)):
    
     try:
+        # Check if token is None or empty
+        if not token:
+            return None
+        
         # JWT token decode karo
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         role : str = payload.get("role", "")
@@ -212,6 +227,13 @@ def get_current_role(token: str = Depends(oauth2_scheme)):
 def require_role(allowed_roles: list):
     def wrapper(token: str = Depends(oauth2_scheme)):
         try:
+            # Check if token is None or empty
+            if not token:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token not provided"
+                )
+            
             # JWT token decode karo
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
             role = payload.get("role", "")
