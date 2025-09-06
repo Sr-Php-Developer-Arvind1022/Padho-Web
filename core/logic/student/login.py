@@ -5,7 +5,7 @@ from sqlalchemy import text
 from fastapi import HTTPException
 from authentication.token_handler import generate_access_token
 from database.database import get_db
-from helpers.helper import hash_password
+from helpers.helper import hash_password, encrypt_the_string
 import pyotp
 
 
@@ -125,6 +125,7 @@ async def student_login(student):
             },
         )
 
+
         # logger.info("execute the login procedure successfully")
     
         # Fetch the result from the stored procedure
@@ -142,12 +143,16 @@ async def student_login(student):
             email = student.email
             token_value = generate_access_token(student_id,email)
             
+            # Encrypt the student_id before returning
+            encrypted_student_id = encrypt_the_string(str(student_id))
+            
             response = {
                 "message": message,
                 "status": True,
                 "data": {
                     "student": {
-                       "student_id": result_data.get("login_id_pk")
+                       "student_id": encrypted_student_id,
+                       "role": result_data.get("role")
                     },
                     "tokens": token_value,
                 },
