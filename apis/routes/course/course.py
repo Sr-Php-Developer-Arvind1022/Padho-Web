@@ -1,9 +1,9 @@
 from fastapi import FastAPI, File, Form, HTTPException, APIRouter, UploadFile, Depends
 from models.course.model import *
 from core.logic.course.course import *
-from core.logic.course.course import search_courses_with_filters
+from core.logic.course.course import search_courses_with_filters, get_courses_public_with_filters
 from authentication.token_handler import get_current_user
-from typing import Optional
+from typing import Optional, Union
 import os
 import shutil
 from datetime import datetime
@@ -243,6 +243,113 @@ async def update_course(
             course_description, course_price, course_image_path, demo_video_path
         )
         return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/api/course/public", tags=["PublicCourseOperation"], summary="Get courses publicly (no JWT required)")
+async def get_courses_public(
+    course_id: Union[str, None] = Form(None),  # Encrypted course ID
+    search: Union[str, None] = Form(None),  # Search term
+    category_id: Union[int, str, None] = Form(None),  # Category filter
+    sort_by: Union[str, None] = Form(None),  # Sorting field
+    sort_order: Union[str, None] = Form(None),  # asc or desc
+    limit: Union[int, str, None] = Form(None),  # Pagination limit
+    offset: Union[int, str, None] = Form(None),  # Pagination offset
+    min_price: Union[float, str, None] = Form(None),  # Price filter
+    max_price: Union[float, str, None] = Form(None),  # Price filter
+    status: Union[str, None] = Form(None)  # Course status filter
+):
+    try:
+        # Helper function to safely convert string values
+        def safe_convert_to_int(value, default=None):
+            if value is None or (isinstance(value, str) and value.strip() == ""):
+                return default
+            try:
+                return int(value)
+            except (ValueError, TypeError):
+                return default
+        
+        def safe_convert_to_float(value, default=None):
+            if value is None or (isinstance(value, str) and value.strip() == ""):
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+        
+        def safe_convert_to_string(value, default=None):
+            if value is None or (isinstance(value, str) and value.strip() == ""):
+                return default
+            return str(value).strip()
+        
+        # Convert and validate all parameters
+        course_id = safe_convert_to_string(course_id)
+        search = safe_convert_to_string(search)
+        category_id = safe_convert_to_int(category_id)
+        sort_by = safe_convert_to_string(sort_by, "created_at")
+        sort_order = safe_convert_to_string(sort_order, "desc")
+        limit = safe_convert_to_int(limit, 10)
+        offset = safe_convert_to_int(offset, 0)
+        min_price = safe_convert_to_float(min_price)
+        max_price = safe_convert_to_float(max_price)
+        status = safe_convert_to_string(status, "active")
+        
+        # Validate pagination limits
+        if limit <= 0 or limit > 100:
+            limit = 10
+        if offset < 0:
+            offset = 0
+        
+        # Validate and sanitize inputs
+        decrypted_course_id = None
+        clean_search = None
+        
+        # Handle encrypted course_id
+        if course_id and course_id.strip():
+            try:
+                from helpers.helper import decrypt_the_string
+                decrypted_course_id = int(decrypt_the_string(course_id.strip()))
+                if decrypted_course_id <= 0:
+                    raise HTTPException(status_code=400, detail="Invalid course ID")
+            except Exception as decrypt_error:
+                raise HTTPException(status_code=400, detail="Invalid encrypted course_id")
+        
+        # Clean search parameter
+        if search and search.strip() and search.strip().lower() != 'none':
+            clean_search = search.strip()
+        
+        # Validate sorting
+        valid_sort_fields = ["created_at", "updated_at", "course_name", "course_price", "course_title"]
+        if sort_by not in valid_sort_fields:
+            sort_by = "created_at"
+        
+        if sort_order.lower() not in ["asc", "desc"]:
+            sort_order = "desc"
+        
+        # Validate price filters
+        if min_price is not None and min_price < 0:
+            min_price = None
+        if max_price is not None and max_price < 0:
+            max_price = None
+        if min_price is not None and max_price is not None and min_price > max_price:
+            min_price, max_price = max_price, min_price
+        
+        # Call the public course function
+        data = await get_courses_public_with_filters(
+            course_id=decrypted_course_id,
+            search=clean_search,
+            category_id=category_id,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+            offset=offset,
+            min_price=min_price,
+            max_price=max_price,
+            status=status
+        )
+        return data
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     

@@ -5,6 +5,7 @@ from apis.api import router as api_router
 # from core.config import API_V1_STR, PROJECT_NAME
 from fastapi.middleware.cors import CORSMiddleware
 import os
+import uvicorn
 from dotenv import load_dotenv
 
 app = FastAPI()
