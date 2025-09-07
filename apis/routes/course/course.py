@@ -100,12 +100,31 @@ async def get_courses(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/api/course/{course_id}", tags=["CourseOperation"], summary="Get course by ID")
-async def get_course(course_id: int):
+async def get_course(
+    course_id: str,  # Changed to string to accept encrypted ID
+    current_user_id: int = Depends(get_current_user)  # JWT authentication required
+):
     """
-    Endpoint to get a specific course by ID.
+    Endpoint to get a specific course by encrypted ID.
+    Note: JWT authentication is required. course_id must be encrypted.
     """
     try:
-        data = await get_course_by_id(course_id)
+        # Validate input
+        if not course_id or not course_id.strip():
+            raise HTTPException(status_code=400, detail="Course ID is required")
+        
+        # Decrypt course_id
+        from helpers.helper import decrypt_the_string
+        try:
+            decrypted_course_id = int(decrypt_the_string(course_id.strip()))
+        except Exception as decrypt_error:
+            raise HTTPException(status_code=400, detail="Invalid encrypted course_id")
+        
+        # Validate decrypted course_id
+        if not decrypted_course_id or decrypted_course_id <= 0:
+            raise HTTPException(status_code=400, detail="Invalid course ID")
+        
+        data = await get_course_by_id(decrypted_course_id, current_user_id)
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -167,21 +186,36 @@ async def search_courses(
 
 @router.put("/api/course/update/{course_id}", tags=["CourseOperation"], summary="Update course")
 async def update_course(
-    course_id: int,
+    course_id: str,  # Changed to string to accept encrypted ID
     course_name: Optional[str] = Form(None),
     course_title: Optional[str] = Form(None),
     course_description: Optional[str] = Form(None),
     course_price: Optional[float] = Form(None),
     course_image: Optional[UploadFile] = File(None),
     demo_video: Optional[UploadFile] = File(None),
-    current_user_id: int = Depends(get_current_user)
+    current_user_id: int = Depends(get_current_user)  # JWT gives us decrypted user ID
 ):
     """
-    Endpoint to update course by course ID.
+    Endpoint to update course by encrypted course ID.
     Only course creator can update their course.
     Requires JWT authentication.
+    - course_id: Encrypted course ID in URL
+    - JWT token provides user authentication
     """
     try:
+        # Validate and decrypt course_id
+        if not course_id or not course_id.strip():
+            raise HTTPException(status_code=400, detail="Course ID is required")
+        
+        from helpers.helper import decrypt_the_string
+        try:
+            decrypted_course_id = int(decrypt_the_string(course_id.strip()))
+        except Exception as decrypt_error:
+            raise HTTPException(status_code=400, detail="Invalid encrypted course_id")
+        
+        if decrypted_course_id <= 0:
+            raise HTTPException(status_code=400, detail="Invalid course ID")
+        
         # Handle file uploads
         course_image_path = None
         demo_video_path = None
@@ -203,8 +237,9 @@ async def update_course(
             with open(demo_video_path, "wb") as buffer:
                 shutil.copyfileobj(demo_video.file, buffer)
         
+        # Call update function with decrypted IDs
         data = await update_course_by_id(
-            course_id, current_user_id, course_name, course_title, 
+            decrypted_course_id, current_user_id, course_name, course_title, 
             course_description, course_price, course_image_path, demo_video_path
         )
         return data

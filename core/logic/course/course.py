@@ -53,11 +53,15 @@ async def course_register(course, course_image_path=None, demo_video_path=None):
         
         message = result_data.get("Message", "Unknown error occurred")
         if result_data and result_data.get("Status", "Error").lower() == "success":
+            # Encrypt course_id before sending
+            from helpers.helper import encrypt_the_string
+            encrypted_course_id = encrypt_the_string(str(result_data.get("course_id")))
+            
             return {
                 "message": message,
                 "status": True,
                 "data": {
-                    "course_id": result_data.get("course_id"),
+                    "course_id": encrypted_course_id,
                     "course_name": course.course_name,
                     "course_title": course.course_title
                 }
@@ -113,15 +117,20 @@ async def get_all_courses(user_id=None):
         
         course_list = []
         for course in courses:
+            # Encrypt course_id and login_id_fk before sending
+            from helpers.helper import encrypt_the_string
+            encrypted_course_id = encrypt_the_string(str(course.get("course_id")))
+            encrypted_login_id_fk = encrypt_the_string(str(course.get("login_id_fk")))
+            
             course_list.append({
-                "course_id": course.get("course_id"),
+                "course_id": encrypted_course_id,
                 "course_name": course.get("course_name"),
                 "course_title": course.get("course_title"),
                 "course_description": course.get("course_description"),
                 "course_price": course.get("course_price"),
                 "course_image": course.get("course_image"),
                 "demo_video": course.get("demo_video"),
-                "login_id_fk": course.get("login_id_fk"),
+                "login_id_fk": encrypted_login_id_fk,
                 "creator_email": course.get("creator_email"),
                 "creator_role": course.get("creator_role"),
                 "created_at": course.get("created_at")
@@ -143,16 +152,25 @@ async def get_all_courses(user_id=None):
     finally:
         db.close()
 
-async def get_course_by_id(course_id: int):
+async def get_course_by_id(course_id: int, user_id: int = None):
     db: Session = next(get_db())
-    
     try:
         connection = db.connection()
         
+        # Validate required parameters
+        if not course_id:
+            return {"status": False, "message": "Course ID is required", "data": []}
+        
+        if not user_id:
+            return {"status": False, "message": "User authentication is required", "data": []}
+        
         # Execute the stored procedure to get course by ID
         result = connection.execute(
-            text("CALL usp_GetCourseById(:p_course_id)"),
-            {"p_course_id": course_id}
+            text("CALL usp_GetCourseById(:p_course_id, :p_login_id_fk)"),
+            {
+                "p_course_id": course_id,
+                "p_login_id_fk": user_id
+            }
         )
         
         # Fetch the result
@@ -162,17 +180,29 @@ async def get_course_by_id(course_id: int):
         if not course_data:
             return {"status": False, "message": "Course not found", "data": []}
         
+        # Check if result contains an error message
+        if course_data.get("Message"):
+            return {"status": False, "message": course_data.get("Message"), "data": []}
+        
+        # Encrypt course_id and login_id_fk before sending
+        from helpers.helper import encrypt_the_string
+        encrypted_course_id = encrypt_the_string(str(course_data.get("course_id")))
+        encrypted_login_id_fk = encrypt_the_string(str(course_data.get("login_id_fk")))
+        
         return {
             "status": True,
             "message": "Course retrieved successfully",
             "data": {
-                "course_id": course_data.get("course_id"),
+                "course_id": encrypted_course_id,
                 "course_name": course_data.get("course_name"),
                 "course_title": course_data.get("course_title"),
                 "course_description": course_data.get("course_description"),
                 "course_price": course_data.get("course_price"),
                 "course_image": course_data.get("course_image"),
                 "demo_video": course_data.get("demo_video"),
+                "login_id_fk": encrypted_login_id_fk,
+                "creator_email": course_data.get("creator_email"),
+                "creator_role": course_data.get("creator_role"),
                 "created_at": course_data.get("created_at")
             }
         }
@@ -212,8 +242,13 @@ async def get_courses_by_user(user_id: int):
         
         course_list = []
         for course in courses:
+            # Encrypt course_id and login_id_fk before sending
+            from helpers.helper import encrypt_the_string
+            encrypted_course_id = encrypt_the_string(str(course.get("course_id")))
+            encrypted_login_id_fk = encrypt_the_string(str(course.get("login_id_fk")))
+            
             course_list.append({
-                "course_id": course.get("course_id"),
+                "course_id": encrypted_course_id,
                 "course_name": course.get("course_name"),
                 "course_title": course.get("course_title"),
                 "course_description": course.get("course_description"),
@@ -222,6 +257,7 @@ async def get_courses_by_user(user_id: int):
                 "demo_video": course.get("demo_video"),
                 "creator_name": course.get("creator_name"),
                 "creator_email": course.get("creator_email"),
+                "login_id_fk": encrypted_login_id_fk,
                 "created_at": course.get("created_at")
             })
         
@@ -298,14 +334,22 @@ async def get_all_courses_with_filters(user_id=None, search=None, limit=10, offs
         
         course_list = []
         for course in courses:
+            # Encrypt course_id and login_id_fk before sending
+            from helpers.helper import encrypt_the_string
+            encrypted_course_id = encrypt_the_string(str(course.get("course_id") or course.get("course_id_pk")))
+            encrypted_login_id_fk = encrypt_the_string(str(course.get("login_id_fk")))
+            
             course_list.append({
-                "course_id": course.get("course_id") or course.get("course_id_pk"),
+                "course_id": encrypted_course_id,
                 "course_name": course.get("course_name"),
                 "course_title": course.get("course_title"),
                 "course_description": course.get("course_description"),
                 "course_price": course.get("course_price"),
                 "course_image": course.get("course_image"),
                 "demo_video": course.get("demo_video"),
+                "login_id_fk": encrypted_login_id_fk,
+                "creator_email": course.get("creator_email"),
+                "creator_role": course.get("creator_role"),
                 "created_at": course.get("created_at"),
                 "status": course.get("status")
             })
@@ -357,6 +401,13 @@ async def update_course_by_id(course_id, user_id, course_name=None, course_title
     try:
         connection = db.connection()
         
+        # Validate required parameters
+        if not course_id or course_id <= 0:
+            return {"status": False, "message": "Valid course ID is required", "data": []}
+        
+        if not user_id or user_id <= 0:
+            return {"status": False, "message": "User authentication is required", "data": []}
+        
         # Execute the stored procedure to update course
         result = connection.execute(
             text("""
@@ -394,11 +445,15 @@ async def update_course_by_id(course_id, user_id, course_name=None, course_title
         status = result_data.get("Status", "Error").lower()
         
         if status == "success":
+            # Encrypt course_id before sending
+            from helpers.helper import encrypt_the_string
+            encrypted_course_id = encrypt_the_string(str(course_id))
+            
             return {
                 "status": True,
                 "message": message,
                 "data": {
-                    "course_id": course_id,
+                    "course_id": encrypted_course_id,
                     "updated_fields": {
                         k: v for k, v in {
                             "course_name": course_name,
