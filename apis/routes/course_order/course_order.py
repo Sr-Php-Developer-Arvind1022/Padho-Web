@@ -15,6 +15,7 @@ async def create_new_course_order(
     course_id: str = Form(..., description="Encrypted course ID"),
     order_amount: float = Form(..., description="Order amount"),
     payment_method: Optional[str] = Form(None, description="Payment method"),
+    transaction_id: Optional[str] = Form(None, description="Transaction ID (optional, will be auto-generated if not provided)"),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -23,7 +24,7 @@ async def create_new_course_order(
     Features:
     1. JWT authentication required
     2. Encrypted course_id handling
-    3. Automatic transaction_id generation (dynamic)
+    3. Flexible transaction_id (can be provided or auto-generated)
     4. Automatic pending payment and order status
     5. Validates course exists and is active
     6. Prevents duplicate orders
@@ -34,12 +35,16 @@ async def create_new_course_order(
     - Order status: 'pending-verification'
     - Course must be active
     - Order amount must match course price
-    - Transaction ID: Auto-generated unique ID
+    - Transaction ID: Use provided ID or auto-generate unique ID
     
     Security:
     - Requires valid JWT token
     - All IDs are encrypted in response
     - Only authenticated users can create orders
+    
+    Transaction ID Logic:
+    - If transaction_id is provided in request, it will be used
+    - If not provided, system will generate: TXN_{timestamp}_{uuid}_{user_id}
     """
     try:
         # Get login_id from JWT (current_user returns user_id as integer)
@@ -49,10 +54,15 @@ async def create_new_course_order(
         from helpers.helper import encrypt_the_string
         encrypted_login_id = encrypt_the_string(str(login_id))
         
-        # Generate dynamic transaction ID
-        timestamp = int(time.time() * 1000)  # milliseconds timestamp
-        unique_id = str(uuid.uuid4()).replace('-', '')[:8]  # 8 character unique ID
-        transaction_id = f"TXN_{timestamp}_{unique_id}_{login_id}"
+        # Handle transaction ID - use provided one or generate dynamic one
+        if transaction_id and transaction_id.strip():
+            # Use provided transaction ID
+            final_transaction_id = transaction_id.strip()
+        else:
+            # Generate dynamic transaction ID
+            timestamp = int(time.time() * 1000)  # milliseconds timestamp
+            unique_id = str(uuid.uuid4()).replace('-', '')[:8]  # 8 character unique ID
+            final_transaction_id = f"TXN_{timestamp}_{unique_id}_{login_id}"
         
         # Validate inputs
         if not course_id or not course_id.strip():
@@ -67,7 +77,7 @@ async def create_new_course_order(
             login_id_fk=encrypted_login_id,
             order_amount=round(order_amount, 2),
             payment_method=payment_method.strip() if payment_method else None,
-            transaction_id=transaction_id
+            transaction_id=transaction_id.strip() if transaction_id else final_transaction_id
         )
         
         return result
