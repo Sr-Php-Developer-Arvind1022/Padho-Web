@@ -259,7 +259,30 @@ async def get_courses_public(
     max_price: Union[float, str, None] = Form(None),  # Price filter
     status: Union[str, None] = Form(None)  # Course status filter
 ):
+    """
+    Public endpoint to get courses without JWT authentication.
+    This endpoint works WITHOUT any JWT token or Authorization header.
+    
+    Features:
+    1. Search courses by name, title, description
+    2. Get specific course by encrypted course_id
+    3. Filter by category_id
+    4. Sorting by multiple fields
+    5. Price range filtering
+    6. Pagination support
+    7. NO AUTHENTICATION REQUIRED
+    
+    Usage Examples:
+    1. All courses: POST /api/course/public (empty body)
+    2. Search: POST with search=python
+    3. Filter: POST with min_price=50&max_price=200
+    """
     try:
+        # Import database functions locally to avoid global auth issues
+        from sqlalchemy.orm import Session
+        from database.database import get_db
+        from sqlalchemy import text
+        
         # Helper function to safely convert string values
         def safe_convert_to_int(value, default=None):
             if value is None or (isinstance(value, str) and value.strip() == ""):
@@ -300,11 +323,8 @@ async def get_courses_public(
         if offset < 0:
             offset = 0
         
-        # Validate and sanitize inputs
+        # Decrypt course_id if provided
         decrypted_course_id = None
-        clean_search = None
-        
-        # Handle encrypted course_id
         if course_id and course_id.strip():
             try:
                 from helpers.helper import decrypt_the_string
@@ -314,44 +334,140 @@ async def get_courses_public(
             except Exception as decrypt_error:
                 raise HTTPException(status_code=400, detail="Invalid encrypted course_id")
         
-        # Clean search parameter
-        if search and search.strip() and search.strip().lower() != 'none':
-            clean_search = search.strip()
+        # Get database session
+        db: Session = next(get_db())
         
-        # Validate sorting
-        valid_sort_fields = ["created_at", "updated_at", "course_name", "course_price", "course_title"]
-        if sort_by not in valid_sort_fields:
-            sort_by = "created_at"
+        try:
+            connection = db.connection()
+            
+            # Call the stored procedure directly
+            result = connection.execute(
+                text("CALL usp_GetCoursesPublic(:p_course_id, :p_search, :p_category_id, :p_sort_by, :p_sort_order, :p_limit, :p_offset, :p_min_price, :p_max_price, :p_status)"),
+                {
+                    "p_course_id": decrypted_course_id,
+                    "p_search": search,
+                    "p_category_id": category_id,
+                    "p_sort_by": sort_by,
+                    "p_sort_order": sort_order,
+                    "p_limit": limit,
+                    "p_offset": offset,
+                    "p_min_price": min_price,
+                    "p_max_price": max_price,
+                    "p_status": status
+                }
+            )
+            
+            # Fetch all results
+            courses = result.mappings().fetchall()
+            db.commit()
+            
+            if not courses:
+                return {
+                    "status": True, 
+                    "message": "No courses found", 
+                    "data": [],
+                    "pagination": {
+                        "limit": limit,
+                        "offset": offset,
+                        "total": 0,
+                        "has_more": False
+                    },
+                    "note": "This endpoint works WITHOUT JWT authentication"
+                }
+            
+            # Check if first result is an error message
+            first_result = courses[0]
+            if first_result.get("Message"):
+                return {"status": False, "message": first_result.get("Message"), "data": []}
+            
+            # Build course list with encrypted IDs
+            course_list = []
+            for course in courses:
+                try:
+                    # Encrypt course_id and login_id_fk before sending
+                    from helpers.helper import encrypt_the_string
+                    encrypted_course_id = encrypt_the_string(str(course.get("course_id") or course.get("course_id_pk")))
+                    encrypted_login_id_fk = encrypt_the_string(str(course.get("login_id_fk")))
+                    
+                    course_list.append({
+                        "course_id": encrypted_course_id,
+                        "course_name": course.get("course_name"),
+                        "course_title": course.get("course_title"),
+                        "course_description": course.get("course_description"),
+                        "course_price": course.get("course_price"),
+                        "course_image": course.get("course_image"),
+                        "demo_video": course.get("demo_video"),
+                        "login_id_fk": encrypted_login_id_fk,
+                        "creator_email": course.get("creator_email"),
+                        "creator_role": course.get("creator_role"),
+                        "created_at": course.get("created_at"),
+                        "updated_at": course.get("updated_at"),
+                        "status": course.get("status"),
+                        "category_id": course.get("category_id"),
+                        "category_name": course.get("category_name")
+                    })
+                except Exception as encrypt_error:
+                    # If encryption fails, skip this course
+                    continue
+            
+            # Create filter description for message
+            filter_desc = []
+            if course_id:
+                filter_desc.append(f"course ID {course_id[:8]}...")
+            if search:
+                filter_desc.append(f"search '{search}'")
+            if category_id:
+                filter_desc.append(f"category {category_id}")
+            if min_price is not None or max_price is not None:
+                price_range = f"price {min_price or 0}-{max_price or '∞'}"
+                filter_desc.append(price_range)
+            
+            filter_text = " with " + ", ".join(filter_desc) if filter_desc else ""
+            message = f"Found {len(course_list)} courses{filter_text} (NO JWT REQUIRED)"
+            
+            # Check if there are more results
+            has_more = len(course_list) == limit
+            
+            return {
+                "status": True,
+                "message": message,
+                "data": course_list,
+                "pagination": {
+                    "limit": limit,
+                    "offset": offset,
+                    "returned": len(course_list),
+                    "has_more": has_more,
+                    "next_offset": offset + limit if has_more else None
+                },
+                "filters": {
+                    "course_id": course_id,
+                    "search": search,
+                    "category_id": category_id,
+                    "sort_by": sort_by,
+                    "sort_order": sort_order,
+                    "min_price": min_price,
+                    "max_price": max_price,
+                    "status": status
+                },
+                "note": "This endpoint works WITHOUT JWT authentication"
+            }
+            
+        except Exception as db_error:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Database error: {str(db_error)}")
         
-        if sort_order.lower() not in ["asc", "desc"]:
-            sort_order = "desc"
-        
-        # Validate price filters
-        if min_price is not None and min_price < 0:
-            min_price = None
-        if max_price is not None and max_price < 0:
-            max_price = None
-        if min_price is not None and max_price is not None and min_price > max_price:
-            min_price, max_price = max_price, min_price
-        
-        # Call the public course function
-        data = await get_courses_public_with_filters(
-            course_id=decrypted_course_id,
-            search=clean_search,
-            category_id=category_id,
-            sort_by=sort_by,
-            sort_order=sort_order,
-            limit=limit,
-            offset=offset,
-            min_price=min_price,
-            max_price=max_price,
-            status=status
-        )
-        return data
+        finally:
+            db.close()
+            
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "status": False,
+            "message": f"Public API Error: {str(e)}",
+            "data": [],
+            "note": "This endpoint should work WITHOUT JWT authentication"
+        }
     
 
     
