@@ -268,7 +268,7 @@ async def create_course(
 
 @router.post("/api/course/all", tags=["CourseOperation"], summary="Get all courses with advanced filtering")
 async def get_courses(
-    login_id_fk: Optional[str] = Form(None),  # Encrypted login_id_fk as string
+    login_id_fk: Optional[str] = Form(None),  # Encrypted user ID as string
     search: Optional[str] = Form(None),
     limit: int = Form(10),
     offset: int = Form(0),
@@ -693,6 +693,237 @@ async def get_courses_public(
             "data": [],
             "note": "This endpoint should work WITHOUT JWT authentication"
         }
+
+@router.post("/api/course/upload-content", tags=["CourseOperation"], summary="Upload video/content for a course")
+async def upload_course_content(
+    course_id: str = Form(..., description="Encrypted course ID"),
+    topic: str = Form(..., description="Topic name"),
+    description: Optional[str] = Form(None, description="Topic description"),
+    video_file: UploadFile = File(..., description="Video file"),
+    assignment_file: Optional[UploadFile] = File(None, description="Assignment file (optional)"),
+    questions_json: Optional[str] = Form(None, description="Questions in JSON format (optional)")
+):
+    """
+    Upload a video (and optional assignment) for a course topic. Stores file URLs in DB.
+    """
+    try:
+        # Decrypt course_id
+        print(f"Uploading content for course_id: {course_id}, topic: {topic}")
+        from helpers.helper import decrypt_the_string
+        try:
+            decrypted_course_id = int(decrypt_the_string(course_id.strip()))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid encrypted course_id")
+        if decrypted_course_id <= 0:
+            raise HTTPException(status_code=400, detail="Invalid course ID")
+
+        # Upload video file to FTP
+        video_url = await upload_file_to_remote(video_file, f"course_{decrypted_course_id}", "video")
+        assignment_url = None
+        if assignment_file:
+            assignment_url = await upload_file_to_remote(assignment_file, f"course_{decrypted_course_id}", "assignment")
+
+        # Insert into DB using stored procedure
+        from sqlalchemy.orm import Session
+        from database.database import get_db
+        from sqlalchemy import text
+        db: Session = next(get_db())
+        try:
+            result = db.execute(
+                text("CALL usp_InsertCourseContent(:p_course_id_fk, :p_topic, :p_description, :p_video_path, :p_assignment_path, :p_questions_json)"),
+                {
+                    "p_course_id_fk": decrypted_course_id,
+                    "p_topic": topic,
+                    "p_description": description,
+                    "p_video_path": video_url,
+                    "p_assignment_path": assignment_url,
+                    "p_questions_json": questions_json
+                }
+            )
+            # Fetch result from stored procedure
+            content_result = result.mappings().fetchone()
+            db.commit()
+            
+            # Check if there was an error from stored procedure
+            if content_result and content_result.get("Status") != "Success":
+                raise HTTPException(status_code=400, detail=content_result.get("Message", "Failed to insert course content"))
+                
+        except Exception as db_err:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"DB error: {str(db_err)}")
+        finally:
+            db.close()
+        return {
+            "status": True,
+            "message": "Course content uploaded successfully!",
+            "data": {
+                "topic": topic,
+                "video_url": video_url,
+                "assignment_url": assignment_url
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+@router.post("/api/course/get-content", tags=["CourseOperation"], summary="Get course content by course ID")
+async def get_course_content(
+    course_id: str = Form(..., description="Encrypted course ID")
+):
+    """
+    Get all course content (videos, assignments) for a specific course by course ID.
+    Returns list of all topics with their video and assignment URLs.
+    """
+    try:
+        # Decrypt course_id
+        from helpers.helper import decrypt_the_string
+        try:
+            decrypted_course_id = int(decrypt_the_string(course_id.strip()))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid encrypted course_id")
+        if decrypted_course_id <= 0:
+            raise HTTPException(status_code=400, detail="Invalid course ID")
+
+        # Get course content using stored procedure
+        from sqlalchemy.orm import Session
+        from database.database import get_db
+        from sqlalchemy import text
+        db: Session = next(get_db())
+        try:
+            result = db.execute(
+                text("CALL usp_GetCourseContent(:p_course_id_fk)"),
+                {"p_course_id_fk": decrypted_course_id}
+            )
+            # Fetch all results from stored procedure
+            content_results = result.mappings().fetchall()
+            db.commit()
+            
+            # Check if there was an error from stored procedure
+            if content_results and content_results[0].get("Status") == "Error":
+                raise HTTPException(status_code=400, detail=content_results[0].get("Message", "Failed to fetch course content"))
+            elif content_results and content_results[0].get("Status") == "Validation Error":
+                raise HTTPException(status_code=400, detail=content_results[0].get("Message", "Validation failed"))
+            
+            # Process the results
+            course_content_list = []
+            for content in content_results:
+                if content.get("Status") == "Success":
+                    # Encrypt course_contents_id_pk before sending
+                    from helpers.helper import encrypt_the_string
+                    encrypted_content_id = encrypt_the_string(str(content.get("course_contents_id_pk")))
+                    encrypted_course_id_fk = encrypt_the_string(str(content.get("course_id_fk")))
+                    
+                    course_content_list.append({
+                        "course_contents_id_pk": encrypted_content_id,
+                        "course_id_fk": encrypted_course_id_fk,
+                        "topic": content.get("topic"),
+                        "description": content.get("description"),
+                        "video_path": content.get("video_path"),
+                        "questions_json": content.get("questions_json"),
+                        "assignment_path": content.get("assignment_path"),
+                        "is_active": content.get("is_active"),
+                        "created_at": content.get("created_at"),
+                        "updated_at": content.get("updated_at")
+                    })
+                
+        except Exception as db_err:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"DB error: {str(db_err)}")
+        finally:
+            db.close()
+            
+        return {
+            "status": True,
+            "message": f"Found {len(course_content_list)} course content items",
+            "data": course_content_list
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get course content: {str(e)}")
+
+@router.post("/api/course/get-content-by-id", tags=["CourseOperation"], summary="Get specific course content by primary key")
+async def get_course_content_by_id(
+    course_content_id: str = Form(..., description="Encrypted course content ID")
+):
+    """
+    Get specific course content by course_contents_id_pk.
+    Returns single course content item with video, assignment URLs and questions.
+    """
+    try:
+        # Decrypt course_content_id
+        from helpers.helper import decrypt_the_string
+        try:
+            decrypted_content_id = int(decrypt_the_string(course_content_id.strip()))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid encrypted course_content_id")
+        if decrypted_content_id <= 0:
+            raise HTTPException(status_code=400, detail="Invalid course content ID")
+
+        # Get specific course content using stored procedure
+        from sqlalchemy.orm import Session
+        from database.database import get_db
+        from sqlalchemy import text
+        db: Session = next(get_db())
+        try:
+            result = db.execute(
+                text("CALL usp_GetCourseContentById(:p_course_contents_id_pk)"),
+                {"p_course_contents_id_pk": decrypted_content_id}
+            )
+            # Fetch result from stored procedure
+            content_result = result.mappings().fetchone()
+            db.commit()
+            
+            # Check if there was an error from stored procedure
+            if content_result and content_result.get("Status") == "Error":
+                raise HTTPException(status_code=400, detail=content_result.get("Message", "Failed to fetch course content"))
+            elif content_result and content_result.get("Status") == "Validation Error":
+                raise HTTPException(status_code=400, detail=content_result.get("Message", "Validation failed"))
+            elif content_result and content_result.get("Status") == "Not Found":
+                raise HTTPException(status_code=404, detail=content_result.get("Message", "Course content not found"))
+            
+            # Process the result
+            if content_result and content_result.get("Status") == "Success":
+                # Encrypt IDs before sending
+                from helpers.helper import encrypt_the_string
+                encrypted_content_id = encrypt_the_string(str(content_result.get("course_contents_id_pk")))
+                encrypted_course_id_fk = encrypt_the_string(str(content_result.get("course_id_fk")))
+                
+                course_content_data = {
+                    "course_contents_id_pk": encrypted_content_id,
+                    "course_id_fk": encrypted_course_id_fk,
+                    "topic": content_result.get("topic"),
+                    "description": content_result.get("description"),
+                    "video_path": content_result.get("video_path"),
+                    "questions_json": content_result.get("questions_json"),
+                    "assignment_path": content_result.get("assignment_path"),
+                    "is_active": content_result.get("is_active"),
+                    "created_at": content_result.get("created_at"),
+                    "updated_at": content_result.get("updated_at")
+                }
+            else:
+                raise HTTPException(status_code=404, detail="Course content not found")
+                
+        except HTTPException:
+            raise
+        except Exception as db_err:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"DB error: {str(db_err)}")
+        finally:
+            db.close()
+            
+        return {
+            "status": True,
+            "message": "Course content retrieved successfully",
+            "data": course_content_data
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get course content: {str(e)}")
 
 
 
