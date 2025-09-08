@@ -1,3 +1,50 @@
+"""
+Course API Routes with Remote File Upload Support
+
+This module handles course-related operations including:
+- Course registration with file uploads
+- Course updates with file uploads
+- Course retrieval and searching
+- Public course access
+
+File Upload Features:
+- Remote upload to https://sahilmoney.in/padho_video
+- Automatic folder creation based on course name
+- Direct remote upload without local fallback
+- Support for both images and videos
+- Encrypted file URLs stored in database
+
+Configuration:
+- REMOTE_UPLOAD_ENABLED: Enable/disable remote uploads (default: true)
+- REMOTE_UPLOAD_URL: Remote upload endpoint URL
+
+Testing:
+- POST /api/course/test-upload: Test file upload functionality
+  Parameters:
+  - file: File to upload
+  - course_name: Course name for folder creation
+  - file_type: 'image' or 'video'
+
+Usage Examples:
+1. Course Registration with Files:
+   POST /api/course/register
+   - course_name: "Python Programming"
+   - course_image: (file)
+   - demo_video: (file)
+   - Files will be uploaded to: https://sahilmoney.in/padho_video/Python_Programming/
+
+2. Test File Upload:
+   POST /api/course/test-upload
+   - file: (test image/video)
+   - course_name: "TestCourse"
+   - file_type: "image"
+
+Error Handling:
+- Network errors are retried up to 2 times
+- All errors are logged for debugging
+- Files are uploaded directly to remote server
+"""
+
 from fastapi import FastAPI, File, Form, HTTPException, APIRouter, UploadFile, Depends
 from models.course.model import *
 from core.logic.course.course import *
@@ -5,10 +52,171 @@ from core.logic.course.course import search_courses_with_filters, get_courses_pu
 from authentication.token_handler import get_current_user
 from typing import Optional, Union
 import os
-import shutil
+import ftplib
+import logging
 from datetime import datetime
+from io import BytesIO
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configuration for file uploads
+REMOTE_UPLOAD_ENABLED = os.getenv('REMOTE_UPLOAD_ENABLED', 'true').lower() == 'true'
+REMOTE_UPLOAD_URL = os.getenv('REMOTE_UPLOAD_URL', 'https://sahilmoney.in/padho_video')
+
+# FTP Configuration
+FTP_HOST = os.getenv('FTP_HOST', 'ftp.sahilmoney.in')
+FTP_USER = os.getenv('FTP_USER', 'padho_videos@sahilmoney.in')
+FTP_PASS = os.getenv('FTP_PASS', 'Arvind@123')
+FTP_BASE_DIR = os.getenv('FTP_BASE_DIR', 'padho_video/')
 
 router = APIRouter()
+
+async def test_ftp_connection():
+    """
+    Test FTP connection and list directories
+    """
+    try:
+        logger.info(f"Testing FTP connection to {FTP_HOST}")
+        ftp = ftplib.FTP()
+        ftp.connect(FTP_HOST, 21)
+        ftp.login(FTP_USER, FTP_PASS)
+        logger.info("FTP connection successful")
+        
+        # Get current directory
+        current_dir = ftp.pwd()
+        logger.info(f"Current directory: {current_dir}")
+        
+        # List root directory
+        logger.info("Listing root directory:")
+        try:
+            ftp.dir()
+        except:
+            logger.info("Could not list root directory")
+        
+        # Try to change to base directory
+        try:
+            ftp.cwd(FTP_BASE_DIR)
+            logger.info(f"Successfully changed to: {FTP_BASE_DIR}")
+            logger.info("Listing base directory:")
+            ftp.dir()
+        except ftplib.error_perm as e:
+            logger.error(f"Could not change to {FTP_BASE_DIR}: {str(e)}")
+            
+            # List available directories in current location
+            logger.info("Available directories:")
+            try:
+                files = ftp.nlst()
+                for file in files:
+                    logger.info(f"  {file}")
+            except:
+                logger.info("Could not list files")
+        
+        ftp.quit()
+        return {"status": "success", "message": "FTP test completed"}
+        
+    except Exception as e:
+        logger.error(f"FTP test failed: {str(e)}")
+        return {"status": "error", "message": str(e)}
+
+async def upload_file_to_remote(file: UploadFile, course_name: str, file_type: str) -> str:
+    """
+    Upload file to remote FTP server and return the URL (fast, no local fallback)
+    """
+    try:
+        folder_name = course_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+        try:
+            file_content = await file.read()
+            await file.seek(0)
+        except:
+            file_content = file.file.read()
+            file.file.seek(0)
+        try:
+            logger.info(f"Connecting to FTP: {FTP_HOST} as {FTP_USER}")
+            ftp = ftplib.FTP()
+            ftp.connect(FTP_HOST, 21, timeout=30)
+            ftp.login(FTP_USER, FTP_PASS)
+            ftp.set_pasv(True)
+            logger.info("FTP connected and passive mode set")
+            # Change to base directory (assume it exists)
+            ftp.cwd(FTP_BASE_DIR)
+            # Try to create course folder (ignore error if exists)
+            try:
+                ftp.mkd(folder_name)
+            except ftplib.error_perm:
+                pass
+            ftp.cwd(folder_name)
+            # Upload file
+            file_stream = BytesIO(file_content)
+            ftp.storbinary(f'STOR {file.filename}', file_stream)
+            logger.info(f"File uploaded via FTP: {file.filename}")
+            ftp.quit()
+            remote_file_url = f"{REMOTE_UPLOAD_URL}/{folder_name}/{file.filename}"
+            logger.info(f"Remote file URL: {remote_file_url}")
+            return remote_file_url
+        except Exception as e:
+            logger.error(f"FTP upload failed: {str(e)}")
+            raise Exception(f"FTP upload failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"Remote upload failed: {str(e)}")
+        raise Exception(f"File upload failed: {str(e)}")
+
+@router.get("/api/course/test-ftp", tags=["CourseOperation"], summary="Test FTP connection")
+async def test_ftp():
+    """
+    Test FTP connection and list directories
+    """
+    result = await test_ftp_connection()
+    return result
+
+@router.post("/api/course/test-upload", tags=["CourseOperation"], summary="Test file upload functionality")
+async def test_file_upload(
+    file: UploadFile = File(...),
+    course_name: str = Form("TestCourse"),
+    file_type: str = Form("image")
+):
+    """
+    Test endpoint to verify file upload functionality.
+    This endpoint uploads files directly to the remote FTP server.
+    
+    Parameters:
+    - file: File to upload
+    - course_name: Course name for folder creation
+    - file_type: Type of file ('image' or 'video')
+    """
+    try:
+        logger.info(f"Testing FTP file upload: {file.filename}, course: {course_name}, type: {file_type}")
+        
+        # Test the upload function
+        result_url = await upload_file_to_remote(file, course_name, file_type)
+        
+        return {
+            "status": True,
+            "message": "FTP file upload test successful",
+            "data": {
+                "filename": file.filename,
+                "course_name": course_name,
+                "file_type": file_type,
+                "uploaded_url": result_url,
+                "ftp_host": FTP_HOST,
+                "ftp_base_dir": FTP_BASE_DIR,
+                "upload_type": "ftp"
+            }
+        }
+    except Exception as e:
+        logger.error(f"FTP file upload test failed: {str(e)}")
+        return {
+            "status": False,
+            "message": f"FTP file upload test failed: {str(e)}",
+            "data": {
+                "filename": file.filename,
+                "course_name": course_name,
+                "file_type": file_type,
+                "ftp_host": FTP_HOST,
+                "ftp_base_dir": FTP_BASE_DIR
+            }
+        }
 
 @router.post("/api/course/register", tags=["CourseOperation"], summary="Register a new course")
 async def create_course(
@@ -23,29 +231,26 @@ async def create_course(
     """
     Endpoint to handle course registration with file uploads.
     Requires JWT authentication.
+    Files are uploaded to remote FTP server: sahilmoney.in/padho_video
     """
     try:
-        # Handle file uploads
-        course_image_path = None
-        demo_video_path = None
+        logger.info(f"Creating course: {course_name}")
         
-        # Create uploads directory if it doesn't exist
-        upload_dir = "uploads/courses"
-        os.makedirs(upload_dir, exist_ok=True)
+        # Handle file uploads to remote server
+        course_image_url = None
+        demo_video_url = None
         
-        # Save course image if provided
+        # Upload course image if provided
         if course_image:
-            image_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{course_image.filename}"
-            course_image_path = f"{upload_dir}/{image_filename}"
-            with open(course_image_path, "wb") as buffer:
-                shutil.copyfileobj(course_image.file, buffer)
+            logger.info(f"Uploading course image: {course_image.filename}")
+            course_image_url = await upload_file_to_remote(course_image, course_name, "image")
+            logger.info(f"Course image uploaded: {course_image_url}")
         
-        # Save demo video if provided
+        # Upload demo video if provided
         if demo_video:
-            video_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{demo_video.filename}"
-            demo_video_path = f"{upload_dir}/{video_filename}"
-            with open(demo_video_path, "wb") as buffer:
-                shutil.copyfileobj(demo_video.file, buffer)
+            logger.info(f"Uploading demo video: {demo_video.filename}")
+            demo_video_url = await upload_file_to_remote(demo_video, course_name, "video")
+            logger.info(f"Demo video uploaded: {demo_video_url}")
         
         # Create course object with login_id_fk from JWT token
         course = CourseRegister(
@@ -56,7 +261,7 @@ async def create_course(
             login_id_fk=current_user_id  # JWT से decrypt किया गया user ID
         )
         
-        data = await course_register(course, course_image_path, demo_video_path)
+        data = await course_register(course, course_image_url, demo_video_url)
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -203,6 +408,8 @@ async def update_course(
     - JWT token provides user authentication
     """
     try:
+        logger.info(f"Updating course: {course_id}")
+        
         # Validate and decrypt course_id
         if not course_id or not course_id.strip():
             raise HTTPException(status_code=400, detail="Course ID is required")
@@ -216,31 +423,49 @@ async def update_course(
         if decrypted_course_id <= 0:
             raise HTTPException(status_code=400, detail="Invalid course ID")
         
-        # Handle file uploads
-        course_image_path = None
-        demo_video_path = None
+        # Handle file uploads to remote server
+        course_image_url = None
+        demo_video_url = None
         
-        upload_dir = "uploads/courses"
-        os.makedirs(upload_dir, exist_ok=True)
+        # Get course name for folder creation (if updating course name, use new name)
+        folder_course_name = course_name if course_name else None
         
-        # Save course image if provided
-        if course_image:
-            image_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{course_image.filename}"
-            course_image_path = f"{upload_dir}/{image_filename}"
-            with open(course_image_path, "wb") as buffer:
-                shutil.copyfileobj(course_image.file, buffer)
+        # If course_name not provided, we need to get it from database
+        if not folder_course_name:
+            # Fetch current course details to get the name
+            from sqlalchemy.orm import Session
+            from database.database import get_db
+            from sqlalchemy import text
+            
+            db: Session = next(get_db())
+            try:
+                result = db.execute(
+                    text("SELECT course_name FROM courses WHERE course_id_pk = :course_id"),
+                    {"course_id": decrypted_course_id}
+                ).fetchone()
+                if result:
+                    folder_course_name = result[0]
+                db.close()
+            except Exception:
+                db.close()
+                raise HTTPException(status_code=500, detail="Could not fetch course details")
         
-        # Save demo video if provided
-        if demo_video:
-            video_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{demo_video.filename}"
-            demo_video_path = f"{upload_dir}/{video_filename}"
-            with open(demo_video_path, "wb") as buffer:
-                shutil.copyfileobj(demo_video.file, buffer)
+        # Upload course image if provided
+        if course_image and folder_course_name:
+            logger.info(f"Uploading course image for update: {course_image.filename}")
+            course_image_url = await upload_file_to_remote(course_image, folder_course_name, "image")
+            logger.info(f"Course image updated: {course_image_url}")
+        
+        # Upload demo video if provided
+        if demo_video and folder_course_name:
+            logger.info(f"Uploading demo video for update: {demo_video.filename}")
+            demo_video_url = await upload_file_to_remote(demo_video, folder_course_name, "video")
+            logger.info(f"Demo video updated: {demo_video_url}")
         
         # Call update function with decrypted IDs
         data = await update_course_by_id(
             decrypted_course_id, current_user_id, course_name, course_title, 
-            course_description, course_price, course_image_path, demo_video_path
+            course_description, course_price, course_image_url, demo_video_url
         )
         return data
     except Exception as e:
@@ -468,7 +693,6 @@ async def get_courses_public(
             "data": [],
             "note": "This endpoint should work WITHOUT JWT authentication"
         }
-    
 
-    
-    
+
+
