@@ -45,7 +45,7 @@ Error Handling:
 - Files are uploaded directly to remote server
 """
 
-from fastapi import FastAPI, File, Form, HTTPException, APIRouter, UploadFile, Depends
+from fastapi import FastAPI, File, Form, HTTPException, APIRouter, UploadFile, Depends, Request, Body
 from models.course.model import *
 from core.logic.course.course import *
 from core.logic.course.course import search_courses_with_filters, get_courses_public_with_filters
@@ -92,8 +92,8 @@ async def test_ftp_connection():
         logger.info("Listing root directory:")
         try:
             ftp.dir()
-        except:
-            logger.info("Could not list root directory")
+        except Exception as e:
+            logger.info(f"Could not list root directory: {e}")
         
         # Try to change to base directory
         try:
@@ -110,8 +110,8 @@ async def test_ftp_connection():
                 files = ftp.nlst()
                 for file in files:
                     logger.info(f"  {file}")
-            except:
-                logger.info("Could not list files")
+            except Exception as e:
+                logger.info(f"Could not list files: {e}")
         
         ftp.quit()
         return {"status": "success", "message": "FTP test completed"}
@@ -126,12 +126,20 @@ async def upload_file_to_remote(file: UploadFile, course_name: str, file_type: s
     """
     try:
         folder_name = course_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+        # Read file content with explicit exception handling and fallback
+        file_content = None
         try:
             file_content = await file.read()
             await file.seek(0)
-        except:
-            file_content = file.file.read()
-            file.file.seek(0)
+        except Exception as e:
+            logger.info(f"Async read failed for {getattr(file,'filename', 'unknown')}, trying sync read: {e}")
+            try:
+                file_content = file.file.read()
+                file.file.seek(0)
+            except Exception as e2:
+                logger.error(f"Sync read also failed for {getattr(file,'filename','unknown')}: {e2}")
+                raise Exception(f"Failed to read uploaded file: {e2}") from e2
+
         try:
             logger.info(f"Connecting to FTP: {FTP_HOST} as {FTP_USER}")
             ftp = ftplib.FTP()
@@ -157,10 +165,10 @@ async def upload_file_to_remote(file: UploadFile, course_name: str, file_type: s
             return remote_file_url
         except Exception as e:
             logger.error(f"FTP upload failed: {str(e)}")
-            raise Exception(f"FTP upload failed: {str(e)}")
+            raise Exception(f"FTP upload failed: {str(e)}") from e
     except Exception as e:
         logger.error(f"Remote upload failed: {str(e)}")
-        raise Exception(f"File upload failed: {str(e)}")
+        raise Exception(f"File upload failed: {str(e)}") from e
 
 @router.get("/api/course/test-ftp", tags=["CourseOperation"], summary="Test FTP connection")
 async def test_ftp():
@@ -220,13 +228,16 @@ async def test_file_upload(
 
 @router.post("/api/course/register", tags=["CourseOperation"], summary="Register a new course")
 async def create_course(
+    course_category: Optional[int] = Form(None),
     course_name: str = Form(...),
     course_title: str = Form(...),
     course_description: Optional[str] = Form(None),
     course_price: Optional[float] = Form(None),
     course_image: Optional[UploadFile] = File(None),
     demo_video: Optional[UploadFile] = File(None),
-    current_user_id: int = Depends(get_current_user)  # JWT token से user ID extract करेंगे
+    current_user_id: int = Depends(get_current_user),
+    flag: str = Form(...),
+    update_id: Optional[int] = Form(None)
 ):
     """
     Endpoint to handle course registration with file uploads.
@@ -252,17 +263,57 @@ async def create_course(
             demo_video_url = await upload_file_to_remote(demo_video, course_name, "video")
             logger.info(f"Demo video uploaded: {demo_video_url}")
         
-        # Create course object with login_id_fk from JWT token
-        course = CourseRegister(
-            course_name=course_name,
-            course_title=course_title,
-            course_description=course_description,
-            course_price=course_price,
-            login_id_fk=current_user_id  # JWT से decrypt किया गया user ID
-        )
+        # Call stored procedure usp_CourseRegister using a connection() from the Session
+        from sqlalchemy.orm import Session
+        from database.database import get_db
+        from sqlalchemy import text
+
+        db: Session = next(get_db())
+        try:
+            connection = db.connection()
+            logger.info("Executing stored procedure usp_CourseRegister via connection.execute")
+            # Ensure parameters follow stored-proc signature and count:
+            # (p_course_category, p_course_name, p_course_title, p_course_description,
+            #  p_course_price, p_course_image, p_demo_video, p_login_id_fk, p_flag, p_update_id)
+            params = {
+                "p_course_category": course_category,
+                "p_course_name": course_name,
+                "p_course_title": course_title,
+                "p_course_description": course_description,
+                "p_course_price": course_price,
+                "p_course_image": course_image_url,
+                "p_demo_video": demo_video_url,
+                "p_login_id_fk": current_user_id,
+                "p_flag": flag,
+                "p_update_id": update_id
+            }
+            logger.info(f"usp_CourseRegister params: {{'p_course_category': {course_category}, 'p_course_name': '{course_name}', 'p_login_id_fk': {current_user_id}, 'p_flag': 'I'}}")
+            result = connection.execute(
+                text("CALL usp_CourseRegister(:p_course_category, :p_course_name, :p_course_title, :p_course_description, :p_course_price, :p_course_image, :p_demo_video, :p_login_id_fk, :p_flag, :p_update_id)"),
+                params
+            )
+            sp_result = result.mappings().fetchone()
+            db.commit()
+        except Exception as db_err:
+            db.rollback()
+            logger.error(f"DB error in usp_CourseRegister: {str(db_err)}")
+            raise HTTPException(status_code=500, detail=f"DB error: {str(db_err)}")
+        finally:
+            db.close()
         
-        data = await course_register(course, course_image_url, demo_video_url)
-        return data
+        # Interpret stored-proc response if present
+        if not sp_result:
+            return {"status": True, "message": "Course registered (no detailed response from DB)", "data": {}}
+        
+        response_payload = {
+            "status": True if sp_result.get("Status") in (None, "Success", True, "True") else False,
+            "message": sp_result.get("Message", "Course registered successfully"),
+            "data": {k: v for k, v in sp_result.items() if k not in ("Status", "Message")}
+        }
+        return response_payload
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -696,6 +747,7 @@ async def get_courses_public(
 
 @router.post("/api/course/upload-content", tags=["CourseOperation"], summary="Upload video/content for a course")
 async def upload_course_content(
+    login_id_fk: Optional[str] = Form(None),  # Encrypted user ID (not used here, but could be for validation)
     course_id: str = Form(..., description="Encrypted course ID"),
     topic: str = Form(..., description="Topic name"),
     description: Optional[str] = Form(None, description="Topic description"),
@@ -716,7 +768,13 @@ async def upload_course_content(
             raise HTTPException(status_code=400, detail="Invalid encrypted course_id")
         if decrypted_course_id <= 0:
             raise HTTPException(status_code=400, detail="Invalid course ID")
-
+        #decrypt login_id_fk if provided (not used here, but could be for validation)
+        decrypted_user_id = None
+        if login_id_fk and login_id_fk.strip():
+            try:
+                decrypted_user_id = int(decrypt_the_string(login_id_fk.strip()))
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid encrypted login_id_fk")
         # Upload video file to FTP
         video_url = await upload_file_to_remote(video_file, f"course_{decrypted_course_id}", "video")
         assignment_url = None
@@ -730,8 +788,9 @@ async def upload_course_content(
         db: Session = next(get_db())
         try:
             result = db.execute(
-                text("CALL usp_InsertCourseContent(:p_course_id_fk, :p_topic, :p_description, :p_video_path, :p_assignment_path, :p_questions_json)"),
+                text("CALL usp_InsertCourseContent(:p_login_id_fk,:p_course_id_fk, :p_topic, :p_description, :p_video_path, :p_assignment_path, :p_questions_json)"),
                 {
+                    "p_login_id_fk": decrypted_user_id,
                     "p_course_id_fk": decrypted_course_id,
                     "p_topic": topic,
                     "p_description": description,
@@ -924,6 +983,129 @@ async def get_course_content_by_id(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get course content: {str(e)}")
+
+# Stored-procedure to create in MySQL (run once in your DB). It uses dynamic SQL (PREPARE) and returns selected rows.
+
+# Notes:
+# - This procedure runs dynamic SQL. For production, validate table_name/columns against a whitelist to avoid SQL injection.
+# - The API will call this procedure and return rows. Use p_table_name='courses' and p_columns='course_id_pk,course_name' to get course id/name.
+
+@router.post("/api/course/flexible-query", tags=["CourseOperation"], summary="Flexible table query via stored procedure")
+async def flexible_query(
+    request: Request,
+    table_name: Optional[str] = Form(None, description="Table name (mandatory)"),
+    columns: Optional[str] = Form(None, description="Columns to select, comma-separated (mandatory)"),
+    where_clause: Optional[str] = Form(None, description="Optional WHERE clause (without 'WHERE')"),
+    group_by: Optional[str] = Form(None, description="Optional GROUP BY clause (columns)"),
+    order_by: Optional[str] = Form(None, description="Optional ORDER BY clause"),
+    limit: Optional[int] = Form(None, description="Optional LIMIT"),
+    offset: Optional[int] = Form(None, description="Optional OFFSET"),
+    login_id_fk: Optional[str] = Form(None, description="Optional encrypted login_id_fk to add to WHERE")
+):
+    """
+    Flexible query API. Accepts form-data or JSON.
+    Example JSON:
+    {
+      "table_name": "courses",
+      "columns": "course_id_pk,course_name",
+      "login_id_fk": "ENCRYPTED_STRING"
+    }
+    """
+    try:
+        # If client sent JSON, merge values from JSON body (JSON overrides form fields)
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                body = await request.json()
+                if isinstance(body, dict):
+                    table_name = body.get("table_name", table_name)
+                    columns = body.get("columns", columns)
+                    where_clause = body.get("where_clause", where_clause) or body.get("where", where_clause)
+                    group_by = body.get("group_by", group_by)
+                    order_by = body.get("order_by", order_by)
+                    limit = int(body.get("limit")) if body.get("limit") is not None else limit
+                    offset = int(body.get("offset")) if body.get("offset") is not None else offset
+                    login_id_fk = body.get("login_id_fk", login_id_fk)
+            except Exception as e:
+                logger.info(f"Failed to parse JSON body for flexible-query: {e}")
+
+        # Validate mandatory inputs now and return clear 400 if missing
+        if not table_name or not str(table_name).strip():
+            raise HTTPException(status_code=400, detail="table_name is required")
+        if not columns or not str(columns).strip():
+            raise HTTPException(status_code=400, detail="columns is required")
+
+        # Decrypt login_id_fk if provided (it may be encrypted string)
+        decrypted_login_id = None
+        if login_id_fk is not None and str(login_id_fk).strip() != "":
+            try:
+                # If client accidentally sent numeric string, accept it without decrypt
+                raw = str(login_id_fk).strip()
+                if raw.isdigit():
+                    decrypted_login_id = int(raw)
+                else:
+                    from helpers.helper import decrypt_the_string
+                    decrypted_login_id = int(decrypt_the_string(raw))
+            except Exception as e:
+                logger.error(f"Failed to decrypt login_id_fk: {e}")
+                raise HTTPException(status_code=400, detail="Invalid encrypted login_id_fk")
+
+        # Build params for stored procedure (NULLs allowed)
+        params = {
+            "p_table_name": str(table_name).strip(),
+            "p_columns": str(columns).strip(),
+            "p_where": where_clause.strip() if where_clause and str(where_clause).strip() else None,
+            "p_group_by": group_by.strip() if group_by and str(group_by).strip() else None,
+            "p_order_by": order_by.strip() if order_by and str(order_by).strip() else None,
+            "p_limit": int(limit) if limit is not None else None,
+            "p_offset": int(offset) if offset is not None else None,
+            "p_login_id_fk": int(decrypted_login_id) if decrypted_login_id is not None else None
+        }
+
+        # Execute stored procedure
+        from sqlalchemy.orm import Session
+        from database.database import get_db
+        from sqlalchemy import text
+
+        db: Session = next(get_db())
+        try:
+            connection = db.connection()
+            logger.info(f"Calling usp_FlexibleQuery for table={params['p_table_name']} columns={params['p_columns']}")
+            result = connection.execute(
+                text("CALL usp_FlexibleQuery(:p_table_name, :p_columns, :p_where, :p_group_by, :p_order_by, :p_limit, :p_offset, :p_login_id_fk)"),
+                params
+            )
+            rows = result.mappings().fetchall()
+            db.commit()
+        except Exception as db_err:
+            db.rollback()
+            logger.error(f"DB error in usp_FlexibleQuery: {db_err}")
+            raise HTTPException(status_code=500, detail=f"DB error: {str(db_err)}")
+        finally:
+            db.close()
+
+        # Convert to list of dicts and encrypt course id fields if present and non-empty
+        data = []
+        if rows:
+            from helpers.helper import encrypt_the_string
+            for r in rows:
+                row = dict(r)
+                # Encrypt course id fields if present and non-empty
+                for id_key in ("course_id_pk", "course_id"):
+                    val = row.get(id_key)
+                    if val is not None and str(val).strip() != "":
+                        try:
+                            row[id_key] = encrypt_the_string(str(val))
+                        except Exception as e:
+                            logger.info(f"Failed to encrypt {id_key}: {e}")
+                data.append(row)
+        return {"status": True, "message": f"Returned {len(data)} rows", "data": data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Flexible query failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 
