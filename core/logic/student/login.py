@@ -1,12 +1,15 @@
-
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from fastapi import HTTPException
-from authentication.token_handler import generate_access_token
+from fastapi import HTTPException, APIRouter, Form, Depends, Request
+from authentication.token_handler import generate_access_token, get_current_user
 from database.database import get_db
-from helpers.helper import hash_password, encrypt_the_string
+from helpers.helper import hash_password, encrypt_the_string, decrypt_the_string
 import pyotp
+from typing import Optional
+
+# Create router for endpoints
+router = APIRouter()
 
 
 async def student_register(student):
@@ -180,3 +183,144 @@ async def student_login(student):
     finally:
         # logger.info(f"Close the database connection")
         db.close()
+
+
+async def fetch_user_details(login_id_encrypted: str, table_name: str = "logins", columns: str = "login_id_pk,username,email,role", where_clause: str = None):
+   
+    db: Session = next(get_db())
+    
+    try:
+        # Decrypt login_id
+        try:
+            decrypted_login_id = int(decrypt_the_string(login_id_encrypted.strip()))
+        except Exception as decrypt_error:
+            return {"status": False, "message": "Invalid encrypted login ID", "data": []}
+            
+        if decrypted_login_id <= 0:
+            return {"status": False, "message": "Invalid login ID", "data": []}
+            
+        # Create WHERE clause with login_id
+        base_where = f"login_id_fk = {decrypted_login_id}"
+        final_where = base_where
+        
+        # Add any additional conditions if provided
+        if where_clause and where_clause.strip():
+            final_where = f"{base_where} AND ({where_clause.strip()})"
+            
+        # Prepare parameters for stored procedure
+        params = {
+            "p_table_name": table_name.strip(),
+            "p_columns": columns.strip(),
+            "p_where": final_where,
+            "p_group_by": None,
+            "p_order_by": None,
+            "p_limit": 1,  # We only need one user's details
+            "p_offset": 0,
+            "p_login_id_fk": decrypted_login_id
+        }
+        
+        # Execute the stored procedure
+        connection = db.connection()
+        result = connection.execute(
+            text("CALL usp_FlexibleQuery(:p_table_name, :p_columns, :p_where, :p_group_by, :p_order_by, :p_limit, :p_offset, :p_login_id_fk)"),
+            params
+        )
+        
+        # Fetch the results
+        user_data = result.mappings().fetchall()
+        db.commit()
+        
+        # No results found
+        if not user_data or len(user_data) == 0:
+            return {"status": False, "message": "User not found", "data": []}
+        
+        # Process the results - convert to list of dicts
+        user_details = []
+        for row in user_data:
+            user_dict = dict(row)
+            # Re-encrypt the login_id_pk for security
+            if "login_id_pk" in user_dict and user_dict["login_id_pk"]:
+                user_dict["login_id_pk"] = encrypt_the_string(str(user_dict["login_id_pk"]))
+            user_details.append(user_dict)
+        
+        return {
+            "status": True,
+            "message": "User details retrieved successfully",
+            "data": user_details
+        }
+        
+    except Exception as e:
+        db.rollback()
+        print(f"Error getting user details: {str(e)}")
+        return {"status": False, "message": f"Failed to get user details: {str(e)}", "data": []}
+    
+    finally:
+        db.close()
+
+
+@router.post("/api/user/details", tags=["UserOperation"], summary="Get user details")
+async def user_details_api(
+    request: Request,
+    login_id: Optional[str] = Form(None, description="Encrypted login ID"),
+    table_name: Optional[str] = Form("logins", description="Table name to query"),
+    columns: Optional[str] = Form("login_id_pk,username,email,role", description="Columns to return"),
+    where_clause: Optional[str] = Form(None, description="Additional WHERE conditions"),
+    current_user_id: int = Depends(get_current_user)  # JWT token authentication
+):
+    
+    try:
+        # Check if we have JSON data
+        content_type = request.headers.get("content-type", "").lower()
+        if "application/json" in content_type:
+            try:
+                json_data = await request.json()
+                
+                # Extract parameters from JSON
+                if "table" in json_data:
+                    table_name = json_data["table"]
+                
+                if "columns" in json_data:
+                    # Handle columns as list or string
+                    if isinstance(json_data["columns"], list):
+                        columns = ",".join(json_data["columns"])
+                    else:
+                        columns = json_data["columns"]
+                
+                # Extract login_id from where clause
+                if "where" in json_data and isinstance(json_data["where"], dict):
+                    where_dict = json_data["where"]
+                    if "login_id" in where_dict:
+                        login_id = where_dict["login_id"]
+                    
+                    # Build where clause from dict
+                    where_parts = []
+                    for key, value in where_dict.items():
+                        if key != "login_id":  # Skip login_id as it's handled separately
+                            if isinstance(value, str):
+                                where_parts.append(f"{key} = '{value}'")
+                            else:
+                                where_parts.append(f"{key} = {value}")
+                    
+                    if where_parts:
+                        where_clause = " AND ".join(where_parts)
+            
+            except Exception as json_err:
+                return {"status": False, "message": f"Invalid JSON format: {str(json_err)}", "data": []}
+        
+        # Validate required parameters
+        if not login_id:
+            return {"status": False, "message": "login_id is required", "data": []}
+        
+        # Call the function to get user details
+        result = await fetch_user_details(
+            login_id_encrypted=login_id,
+            table_name=table_name,
+            columns=columns,
+            where_clause=where_clause
+        )
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error in user_details_api: {str(e)}")
+        return {"status": False, "message": f"Failed to get user details: {str(e)}", "data": []}
