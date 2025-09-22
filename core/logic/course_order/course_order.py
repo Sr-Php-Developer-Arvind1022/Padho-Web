@@ -196,6 +196,7 @@ async def get_course_orders_with_filters(
                 "updated_at": order.get("updated_at"),
                 "course_name": order.get("course_name"),
                 "course_title": order.get("course_title"),
+                "course_image": order.get("course_image"),
                 "user_email": order.get("user_email")
             })
         
