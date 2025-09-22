@@ -19,3 +19,6 @@ class StudentRegister(BaseModel):
     phone: str
     address: str
     parent_email: str
+
+class RefreshToken(BaseModel):
+    refresh_token: str

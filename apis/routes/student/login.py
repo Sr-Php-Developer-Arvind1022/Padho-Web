@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, Form, HTTPException, APIRouter, UploadFile, Depends, Request
 from models.student.model import *
 from core.logic.student.login import student_register, student_login, fetch_user_details
-from authentication.token_handler import get_current_user
+from authentication.token_handler import *
 from typing import Optional
 
 router = APIRouter()
@@ -28,6 +28,19 @@ async def login_student(student: StudentLogin):
        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+@router.post("/api/refresh-token", tags=["StudentLoginOperation"], summary="Student login")
+async def refresh_token(student: RefreshToken):
+    """
+    Endpoint to handle student login.
+    """
+    try:
+       data = await refresh_access_token(student.refresh_token)
+       return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 
 @router.post("/api/student/get_user_details", tags=["StudentOperation"], summary="Get user details")
 async def user_details(
