@@ -144,7 +144,8 @@ async def student_login(student):
             # track the login with ip address and data
             student_id = result_data.get("login_id_pk")
             email = student.email
-            token_value = generate_access_token(student_id,email)
+            role =result_data.get("role")
+            token_value = generate_access_token(student_id,email,role)
             
             # Encrypt the student_id before returning
             encrypted_student_id = encrypt_the_string(str(student_id))
