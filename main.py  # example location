@@ -7,7 +7,7 @@ router = APIRouter()
 async def sync_login_table_trigger():
     """
     Trigger sync of 'logins' -> Mongo 'login_table' for role = 'student'.
-    No parameters required; calling this URL will perform the sync.
+    No parameters required; calling this URL will perform the syncs.
     """
     try:
         result = call_flexible_query_and_sync(
