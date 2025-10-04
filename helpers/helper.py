@@ -8,6 +8,10 @@ import secrets
 import os
 from dotenv import load_dotenv
 import smtplib
+import redis
+import logging
+
+logger = logging.getLogger(__name__)
 from cryptography.fernet import Fernet
 from pydantic import EmailStr, BaseModel
 from jinja2 import Environment, FileSystemLoader
@@ -231,3 +235,17 @@ def group_job_values_by_jobid(job_values):
 
     # Dictionary ko list me convert karke return karo
     return list(grouped.values())
+def clear_courses_cache():
+    """Clear all courses cache from Redis after course modifications"""
+    try:
+        r = redis.Redis.from_url("rediss://default:AUEQAAIncDIwOTk0M2IwYWU5MTI0N2NjODAzZjhhNGEyZTMxZmI2ZHAyMTY2NTY@vast-reindeer-16656.upstash.io:6379")
+        keys = r.keys("courses:filters:*")
+        if keys:
+            deleted_count = r.delete(*keys)
+            logger.info(f"Cache cleared: {deleted_count} course entries removed")
+            return True
+        logger.info("No course cache to clear")
+        return True
+    except Exception as err:
+        logger.error(f"Cache clear failed (non-critical): {str(err)}")
+        return False  # Don't break the main operation if cache clear fails
