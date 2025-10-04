@@ -33,6 +33,7 @@ uvicorn==0.35.0
 python-multipart==0.0.15
 pymongo==4.15.1
 redis==5.3.1
-logging==0.5.1.2
+
+
 
 
