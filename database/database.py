@@ -4,7 +4,7 @@ from urllib.parse import quote_plus
 
 username = "sahilmon_padho"
 password = quote_plus("padho@123") 
-host = "162.55.84.37"
+host = "176.9.144.171"
 port = "3306"
 dbname = "sahilmon_padho"
 
