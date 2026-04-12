@@ -156,7 +156,8 @@ async def student_login(student):
                 "data": {
                     "student": {
                        "student_id": encrypted_student_id,
-                       "role": result_data.get("role")
+                       "role": result_data.get("role"),
+                       "name": result_data.get("name")
                     },
                     "tokens": token_value,
                 },
