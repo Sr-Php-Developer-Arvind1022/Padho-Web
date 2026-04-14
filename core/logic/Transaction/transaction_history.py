@@ -4,6 +4,7 @@ from datetime import datetime
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
+
 logger = logging.getLogger(__name__)
 
 MONGO_URI = os.getenv("MONGO_URI","mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
