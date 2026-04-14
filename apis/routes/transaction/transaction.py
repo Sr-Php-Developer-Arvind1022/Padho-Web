@@ -37,6 +37,7 @@ import logging
 from core.logic.Transaction.transaction import extract_transactions
 
 # Setup logging
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
