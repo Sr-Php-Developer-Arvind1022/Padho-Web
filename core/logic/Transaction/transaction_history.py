@@ -6,7 +6,7 @@ from pymongo.errors import PyMongoError
 
 logger = logging.getLogger(__name__)
 
-MONGO_URI = os.getenv("MONGO_URI")
+MONGO_URI = os.getenv("MONGO_URI","mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 if not MONGO_URI:
     raise ValueError("MONGO_URI environment variable is not set")
     
