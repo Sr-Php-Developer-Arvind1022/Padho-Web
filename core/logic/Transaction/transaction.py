@@ -12,7 +12,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# --- Groq AI Setup ---
+# --- Groq AI Setup ----
 
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
