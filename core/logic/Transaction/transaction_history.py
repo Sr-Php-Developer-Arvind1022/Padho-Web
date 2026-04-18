@@ -29,15 +29,42 @@ def get_db():
 def SaveTransaction(user_id: str, transaction: dict) -> dict:
     try:
         col = get_db()["transactions"]
+        wallet_col = get_db()["wallet"]
         transaction["user_id"] = user_id
         transaction["created_at"] = datetime.utcnow().isoformat()
         print(f"Saving transaction for user_id={user_id}: {transaction}")
         result = col.insert_one(transaction)
+        # Wallet logic
+        amount = float(transaction.get("amount", 0))
+        transaction_type = transaction.get("transaction_type", "").lower()
+
+        # Check wallet exists
+        wallet = wallet_col.find_one({"user_id": user_id})
+
+        if not wallet:
+            balance = amount if transaction_type == "credit" else -amount
+
+            wallet_col.insert_one({
+                "user_id": user_id,
+                "balance": balance,
+                "created_at": datetime.utcnow().isoformat()
+            })
+
+        else:
+            if transaction_type == "credit":
+                wallet_col.update_one(
+                    {"user_id": user_id},
+                    {"$inc": {"balance": amount}}
+                )
+            elif transaction_type == "debit":
+                wallet_col.update_one(
+                    {"user_id": user_id},
+                    {"$inc": {"balance": -amount}}
+                )
         return {"status": "success", "inserted_id": str(result.inserted_id)}
     except PyMongoError as e:
         logger.error(f"SaveTransaction error: {e}")
         return {"status": "error", "detail": str(e)}
-
 
 def GetTransactionHistory(user_id: str, limit: int = 50, skip: int = 0) -> dict:
     try:
