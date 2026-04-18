@@ -15,7 +15,7 @@ router = APIRouter()
 # --- Groq AI Setup ----
 
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
 MODEL = "llama-3.3-70b-versatile"
 client = Groq(api_key=GROQ_API_KEY)
 
