@@ -4,7 +4,7 @@ from .routes.student.login import router as login_router
 from .routes.course.course import router as course_router
 from .routes.course_order.course_order import router as course_order_router
 from .routes.transaction.transaction import router as transaction_router
-
+from .routes.notification.notification import router as notification_router
 
 from .routes.cron.sync_to_mongo import router as cron_router
 from .routes.teacher.teachers import router as teacherRouter
@@ -15,3 +15,6 @@ router.include_router(course_order_router)
 router.include_router(transaction_router)
 router.include_router(cron_router)
 router.include_router(teacherRouter)
+
+router.include_router(teacherRouter)
+router.include_router(notification_router)
