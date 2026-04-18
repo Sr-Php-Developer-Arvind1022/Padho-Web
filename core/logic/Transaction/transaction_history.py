@@ -31,6 +31,7 @@ def SaveTransaction(user_id: str, transaction: dict) -> dict:
         col = get_db()["transactions"]
         transaction["user_id"] = user_id
         transaction["created_at"] = datetime.utcnow().isoformat()
+        print(f"Saving transaction for user_id={user_id}: {transaction}")
         result = col.insert_one(transaction)
         return {"status": "success", "inserted_id": str(result.inserted_id)}
     except PyMongoError as e:
