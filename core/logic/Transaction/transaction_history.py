@@ -42,6 +42,10 @@ def GetTransactionHistory(user_id: str, limit: int = 50, skip: int = 0) -> dict:
     try:
         col = get_db()["transactions"]
         transactions = list(col.find({"user_id": user_id}, {"_id": 0}).skip(skip).limit(limit))
+        total_credits = sum(t.get("amount", 0) for t in transactions if t.get("transaction_type") == "credit")
+        total_debits = sum(t.get("amount", 0) for t in transactions if t.get("transaction_type") == "debit")
+        transactions.append({"total_credits": total_credits})
+        transactions.append({"total_debits": total_debits})
         return {
             "status": "success",
             "transactions": transactions,
