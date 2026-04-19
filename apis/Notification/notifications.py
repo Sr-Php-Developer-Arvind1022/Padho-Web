@@ -35,7 +35,7 @@ firebase_config = {
     "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
     "token_uri": "https://oauth2.googleapis.com/token",
 }
-
+print(firebase_config)
 if not firebase_admin._apps:
     cred = credentials.Certificate(firebase_config)
     firebase_admin.initialize_app(cred)
