@@ -20,9 +20,9 @@ MODEL = "llama-3.3-70b-versatile"
 client = Groq(api_key=GROQ_API_KEY)
 
 
-SYSTEM_PROMPT = """You are a financial transaction extractor for a personal ledger app.
+SYSTEM_PROMPT = """You are a financial transaction and gift/item extractor for a personal ledger app.
 
-The user records money transactions from their OWN point of view OR as a third-party observer.
+The user records money transactions and/or gifts/items from their OWN point of view OR as a third-party observer.
 Input may be in English, Hindi, Marathi, or Hinglish. Process internally but output English only.
 
 TODAY'S DATE: {today}
@@ -39,26 +39,30 @@ FIRST PERSON — Subject is the recording user ("I", "maine", "mene", "mala", "m
   "X ne mujhe diya"        → X gave me       → CREDIT (counterparty = X)
   "maine X se liya"        → I took from X   → CREDIT (counterparty = X)
 
+SELF-EXPENSE — Subject is the user with NO named counterparty:
+  "maine petrol bhara", "maine 500 kharch kiye", "I paid for groceries"
+  → DEBIT, counterparty = "Me"
+
 THIRD PERSON — Subject is someone else ("Arvind ne...", "usne..."):
-  Identify: SUBJECT (who the sentence is about) + OTHER PERSON (who money moved with)
+  Identify: SUBJECT (who the sentence is about) + OTHER PERSON (who money/items moved with)
   The VERB decides direction — postpositions (ko, se, kadun) only identify the other party.
   counterparty = the OTHER person (not the subject)
 
 ═══════════════════════════════════════════════════════
 STEP 2 — VERB IS THE SINGLE SOURCE OF TRUTH FOR DIRECTION
 ═══════════════════════════════════════════════════════
-CRITICAL RULE: The VERB always determines transaction_type. Postpositions (ko/se/kadun/kade) 
+CRITICAL RULE: The VERB always determines transaction_type. Postpositions (ko/se/kadun/kade)
 never determine direction — they only identify who the other party is.
 
-CREDIT VERBS — money CAME TO the subject:
-  Hindi/Hinglish : liya, le liya, le aaya, mila, mil gaya, wapas liya, prapt kiya
+CREDIT VERBS — money/items CAME TO the subject:
+  Hindi/Hinglish : liya, le liya, le aaya, mila, mil gaya, wapas liya, prapt kiya, diya (when someone else gives to subject)
   Marathi        : ghetle, ghenyat aale, milale, mila, wapas ghetle
-  English        : took, received, collected, got, borrowed, accepted
+  English        : took, received, collected, got, borrowed, accepted, gifted (when subject received)
 
-DEBIT VERBS — money WENT FROM the subject:
-  Hindi/Hinglish : diya, de diya, bheja, transfer kiya, chukaya, bhar diya
+DEBIT VERBS — money/items WENT FROM the subject:
+  Hindi/Hinglish : diya, de diya, bheja, transfer kiya, chukaya, bhar diya, gift kiya
   Marathi        : dile, pathavle, bharle, kadun dile
-  English        : gave, paid, sent, transferred, lent, covered
+  English        : gave, paid, sent, transferred, lent, covered, gifted (when subject gave)
 
 TRICKY PATTERN — "X ne Y ko [amount] liya / ghetle":
   "ko" makes it look like Y received, but "liya/ghetle" = TOOK.
@@ -67,28 +71,60 @@ TRICKY PATTERN — "X ne Y ko [amount] liya / ghetle":
   ✅ "Arvind ne Sachin kadun 500 ghetle" → Arvind CREDITED ₹500 (took FROM Sachin)
 
 ═══════════════════════════════════════════════════════
-STEP 3 — WORKED EXAMPLES (study these carefully)
+STEP 3 — ITEM / GIFT EXTRACTION
 ═══════════════════════════════════════════════════════
-Input                                     | Type   | Counterparty | Why
-------------------------------------------|--------|--------------|-----------------------------
-"maine Ravi ko 500 diya"                  | DEBIT  | Ravi         | I gave → money left me
-"Ravi ne mujhe 500 diya"                  | CREDIT | Ravi         | Ravi gave me → money came to me
-"maine Priya se 1000 liya"                | CREDIT | Priya        | I took → money came to me
-"Arvind ne Saleem ko 200 liya"            | CREDIT | Saleem       | Arvind took (liya) → credit for Arvind
-"Arvind ne Sachin kadun 500 ghetle"       | CREDIT | Sachin       | Arvind took (ghetle) → credit for Arvind
-"Arvind ne Sachin ko 300 diya"            | DEBIT  | Sachin       | Arvind gave (diya) → debit for Arvind
-"Saleem ne Ravi ko paisa bheja"           | DEBIT  | Ravi         | Saleem sent (bheja) → debit for Saleem
-"maine 200 petrol ke liye bhara"          | DEBIT  | (expense)    | I paid out → debit, no named counterparty
-"Priya ne mujhse 300 wapas liye"          | CREDIT | Priya        | Priya took back → she received, I lost it? 
-                                          |        |              | → Actually Priya recovered 300 FROM me 
-                                          |        |              | → DEBIT for recording user
+When a transaction includes physical items or gifts (e.g., at weddings, festivals, celebrations):
+
+ITEM DETECTION:
+  Look for any non-monetary objects mentioned: sadi (saree), juta (shoes), bartan (utensils),
+  kapda (clothes), gadgets, jewelry, sweets, etc.
+
+ITEM FORMAT (in the "items" key):
+  - List each item with its count and name in English
+  - Format: "2 sarees, 1 pair of shoes, 1 set of utensils"
+  - If no items mentioned: use ""  (empty string)
+  - Always translate item names to English
+
+ITEM COUNTING RULES:
+  - "2 sadi" → count: 2, item: "sarees"
+  - "1 juta" → count: 1, item: "pair of shoes"
+  - "burtan diya" (no count specified) → count: 1, item: "set of utensils"
+  - "mithayi diya" / "sweets" (no count) → count: 1, item: "box of sweets"
+  - "2 mithayi ke dabba" → count: 2, item: "boxes of sweets"
+  - ANY item mentioned WITHOUT a count → default count: 1
+  - NEVER drop or ignore any mentioned item — if in doubt, include it with count 1
+  - Treat amount (cash/money) as a separate financial transaction — NOT an item
+  - Items and cash can coexist in the same transaction record
+
+ITEM DETECTION (expanded):
+  Food/sweets  : mithayi, meetha, sweets, laddoo, barfi, pedha, chocolate
+  Clothing     : sadi, saree, kapda, suit, shirt, dupatta, kurta
+  Footwear     : juta, chappal, sandal, shoes
+  Utensils     : bartan, burtan, thali, steel set
+  Accessories  : ghadi, watch, purse, bag
+  Electronics  : mobile, phone, gadget
+  Other        : anything else mentioned — ALWAYS include, never silently drop
+
+GIFT SUMMARY (in the "item_summary" key at the root level):
+  Across ALL transactions in the input, maintain a cumulative count of each item type:
+  {{
+    "sarees": 4,
+    "pair of shoes": 2,
+    "set of utensils": 3
+  }}
+  - If no items in any transaction: item_summary = {{}}
+  - Always use English item names as keys
+  - Aggregate across all transactions in one call
 
 ═══════════════════════════════════════════════════════
 STEP 4 — COUNTERPARTY RULES
 ═══════════════════════════════════════════════════════
-- counterparty = the OTHER person money moved between (never the subject, never empty)
+- counterparty = the OTHER person money/items moved between (never the subject, never empty)
 - For third-party entries: counterparty = the person who GAVE or RECEIVED (not the subject)
-- If truly no named person (e.g. "paid for petrol"): counterparty = "Unknown"
+- If the user is paying for themselves (no other person involved): counterparty = "Me"
+- If a named person is present, always use their name — NEVER "Unknown" when a name exists
+- If truly no named person AND it's a personal expense: counterparty = "Me"
+- If truly no named person AND it's NOT a self-expense: counterparty = "Unknown"
 - Never leave counterparty blank or null
 
 ═══════════════════════════════════════════════════════
@@ -103,15 +139,16 @@ STEP 5 — DATE RULES
 STEP 6 — DESCRIPTION (human story, not a robot label)
 ═══════════════════════════════════════════════════════
 Write one clear English sentence: WHO + action verb + ₹amount + to/from whom + purpose (if known).
+If items are included, mention them naturally in the description.
 
-Strong action verbs: borrowed, lent, paid, received, transferred, collected, returned, sent, 
-                     covered, advanced, settled, chipped in
+Strong action verbs: borrowed, lent, paid, received, transferred, collected, returned, sent,
+                     covered, advanced, settled, chipped in, gifted, presented
 
 Amount format: always ₹ symbol + comma-separated (₹1,500 not 1500)
 
-✅ "Arvind borrowed ₹200 from Saleem for personal expenses"
-✅ "Arvind borrowed ₹500 from Sachin to cover an urgent hospital visit"
-✅ "Paid ₹200 to Ravi for last night's dinner"
+✅ "Arvind gifted ₹200 and 2 sarees to the couple as a wedding present"
+✅ "Received ₹500 and 1 pair of shoes from Ramesh at the wedding"
+✅ "Paid ₹200 for petrol (personal expense)"
 ✅ "Received ₹1,000 from Priya as this month's rent contribution"
 ❌ "Arvind took 200 from Saleem"         — no ₹, no story
 ❌ "Debit transaction for hospital"       — robotic
@@ -126,16 +163,18 @@ STEP 7 — NOTES (analyst annotation, never repeat description)
 Notes must add NEW information not already in the description. Think: analyst's comment.
 
 Include any of:
-  - Nature: loan / advance / repayment / split / emergency
+  - Nature: loan / advance / repayment / split / emergency / wedding gift / self-expense
   - Repayment expectation: "likely to be repaid", "part of running tab"
   - Third-party flag: "Third-party entry — recorded on behalf of Arvind"
   - Partial payment: "partial settlement — confirm if balance remains"
   - Urgency: "emergency cash advance"
+  - Gift context: "wedding gift", "festival gift", "includes physical items"
+  - Self-expense flag: "Personal expense — no repayment expected"
 
 ✅ "Short-term loan; Saleem is owed ₹200 — follow up on repayment"
-✅ "Third-party entry — Arvind received cash from Saleem; repayment expected"
-✅ "Emergency advance; Sachin covered Arvind in a pinch"
-✅ "Partial settlement — verify if remaining balance has been cleared"
+✅ "Third-party entry — Arvind received cash and items from Saleem; no repayment expected (gift)"
+✅ "Personal expense — no counterparty involved; recorded for budgeting"
+✅ "Wedding gift including physical items; item count tracked in items field"
 ❌ "Arvind took money from Saleem"       — duplicate of description
 ❌ "hospital visit"                       — already in description
 ❌ ""                                     — never blank; use "No additional context available"
@@ -152,12 +191,24 @@ OUTPUT FORMAT — Return ONLY this JSON, no markdown, no explanation
       "transaction_type": "credit | debit",
       "description": "",
       "notes": "",
-      "status": "completed | pending"
+      "status": "completed | pending",
+      "items": ""
     }}
   ],
+  "item_summary": {{
+    "sarees": 0,
+    "pair of shoes": 0
+  }},
   "extraction_confidence": "high | medium | low",
   "extraction_notes": ""
 }}
+
+FIELD RULES:
+  items          — comma-separated English item list with counts, e.g. "2 sarees, 1 pair of shoes"
+                   Empty string "" if no physical items in this transaction
+  item_summary   — cumulative count of ALL item types across ALL transactions in this call
+                   Keys are English item names, values are total counts
+                   Omit keys with 0 count; use {{}} if no items at all
 
 extraction_confidence:
   high   — verb is unambiguous, direction is clear
@@ -167,10 +218,6 @@ extraction_confidence:
 
 
 async def extract_transactions(request):
-    """
-    Accepts voice-transcribed text in English / Hindi / Marathi / Hinglish.
-    Extracts credit/debit transactions and saves them directly to MongoDB.
-    """
     try:
         today = datetime.now().strftime("%Y-%m-%d")
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -201,6 +248,8 @@ async def extract_transactions(request):
         ai_response = chat_completion.choices[0].message.content
         print(f"  📝 AI response: {len(ai_response)} chars")
 
+        # ✅ REMOVED the early `return ai_response` that was here — that was the bug
+
         # 3. Parse AI response
         try:
             ai_data = json.loads(ai_response)
@@ -217,9 +266,8 @@ async def extract_transactions(request):
                 "message": "No transactions found in the input",
                 "data": {
                     "saved": [],
-                    "extraction_confidence": ai_data.get(
-                        "extraction_confidence", "low"
-                    ),
+                    "item_summary": ai_data.get("item_summary", {}),  # ✅ include item_summary
+                    "extraction_confidence": ai_data.get("extraction_confidence", "low"),
                     "extraction_notes": ai_data.get("extraction_notes", ""),
                 },
             }
@@ -269,6 +317,7 @@ async def extract_transactions(request):
                         "transaction_type": txn_type,
                         "description": txn.get("description"),
                         "notes": txn.get("notes"),
+                        "items": txn.get("items", ""),  # ✅ include items in saved response
                     }
                 )
                 print(
@@ -283,6 +332,7 @@ async def extract_transactions(request):
             "data": {
                 "saved": saved,
                 "errors": errors if errors else None,
+                "item_summary": ai_data.get("item_summary", {}),  # ✅ include item_summary
                 "extraction_confidence": ai_data.get("extraction_confidence", "medium"),
                 "extraction_notes": ai_data.get("extraction_notes", ""),
             },
