@@ -7,6 +7,8 @@ from database.database import get_db
 from helpers.helper import hash_password, encrypt_the_string, decrypt_the_string
 import pyotp
 from typing import Optional
+from services.email_service import send_email
+from helpers.template_helper import render_template
 
 # Create router for endpoints
 router = APIRouter()
@@ -69,6 +71,13 @@ async def student_register(student):
 
         message = result_data.get("Message", "Unknown error occurred")
         if result_data and result_data.get("Status","Error").lower() == "success":
+            html_content = render_template(student.name, student.email, student.password)
+            send_email(student.email, "Welcome to BoloApp", html_content)
+            send_email(
+                to_email=student.email,
+                subject="Welcome to BoloApp 🎉",
+                html_content=html_content
+            )
             return {
                 "message": message,
                 "status": True,
