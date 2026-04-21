@@ -1,4 +1,5 @@
 from datetime import datetime
+from dns.name import empty
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from fastapi import HTTPException, APIRouter, Form, Depends, Request
@@ -8,7 +9,7 @@ from helpers.helper import hash_password, encrypt_the_string, decrypt_the_string
 import pyotp
 from typing import Optional
 from services.email_service import send_email
-from helpers.template_helper import render_template
+from helpers.template_helper import render_template, render_password_change_template, render_forgot_password_template
 
 # Create router for endpoints
 router = APIRouter()
@@ -336,3 +337,104 @@ async def user_details_api(
     except Exception as e:
         print(f"Error in user_details_api: {str(e)}")
         return {"status": False, "message": f"Failed to get user details: {str(e)}", "data": []}
+
+async def user_password_change_api( 
+    current_password: str = Form(..., description="Current password"),
+    new_password: str = Form(..., description="New password"),
+    confirm_password: str = Form(..., description="Confirm new password"),
+    current_user_id: int = Depends(get_current_user)  # JWT token authentication
+):
+    
+    db: Session = next(get_db())
+    
+    try:
+        if current_password=='':
+            return {"status": False, "message": "Current password field is required", "data": []}
+        if new_password=='':
+            return {"status": False, "message": "New password field is required", "data": []}
+        if confirm_password=='':
+            return {"status": False, "message": "Confirm password field is required", "data": []}
+        # Validate new password and confirm password match
+        if new_password != confirm_password:
+            return {"status": False, "message": "New password and confirm password do not match", "data": []}
+        
+        # Fetch the user's current password hash from the database
+        connection = db.connection()
+        result = connection.execute(
+            text("SELECT password,students.name,students.email FROM logins JOIN students ON logins.login_id_pk = students.login_id_fk WHERE logins.login_id_pk = :login_id"),
+            {"login_id": current_user_id}
+        )
+        user_data = result.mappings().fetchone()
+        
+        if not user_data:
+            return {"status": False, "message": "User not found", "data": []}
+        
+        current_password_hash = user_data.get("password")
+        
+        # Verify the current password
+        if not hash_password(current_password) == current_password_hash:
+            return {"status": False, "message": "Current password is incorrect", "data": []}
+        
+        # Update the password in the database
+        new_password_hash = hash_password(new_password)
+        connection.execute(
+            text("UPDATE logins SET password = :new_password WHERE login_id_pk = :login_id"),
+            {"new_password": new_password_hash, "login_id": current_user_id}
+        )
+        db.commit()
+        current_password_hash = user_data.get("password")
+        html_content = render_password_change_template(user_data.get("name"), user_data.get("email"), new_password)
+        send_email(user_data.get("email"), "Password Changed", html_content)
+        return {"status": True, "message": "Password changed successfully", "data": []}
+        
+    except Exception as e:
+        db.rollback()
+        print(f"Error changing password: {str(e)}")
+        return {"status": False, "message": f"Failed to change password: {str(e)}", "data": []}
+    
+    finally:
+        db.close()
+
+async  def forgot_password_api(
+    email: str = Form(..., description="User's email address"),
+   
+):
+    db: Session = next(get_db())
+    
+    try:
+        # Fetch the user's current password hash from the database
+        if email=='':
+            return {"status": False, "message": "Email field is required", "data": []}
+        
+        connection = db.connection()
+        new_password = pyotp.random_base32()[:8]  # Generate a random 8-character password
+        result = connection.execute(
+            text("SELECT login_id_pk, students.name, students.email FROM logins JOIN students ON logins.login_id_pk = students.login_id_fk WHERE logins.username = :email"),
+            {"email": email}
+        )
+        user_data = result.mappings().fetchone()
+        
+        if not user_data:
+            return {"status": False, "message": "User not found", "data": []}
+        
+        login_id = user_data.get("login_id_pk")
+        
+        # Update the password in the database
+        new_password_hash = hash_password(new_password)
+        connection.execute(
+            text("UPDATE logins SET password = :new_password WHERE login_id_pk = :login_id"),
+            {"new_password": new_password_hash, "login_id": login_id}
+        )
+        db.commit()
+        html_content = render_forgot_password_template(user_data.get("name"), user_data.get("email"), new_password)
+        send_email(user_data.get("email"), "Forgot Password", html_content)
+
+        return {"status": True, "message": "Password reset successfully", "data": []}
+        
+    except Exception as e:
+        db.rollback()
+        print(f"Error resetting password: {str(e)}")
+        return {"status": False, "message": f"Failed to reset password: {str(e)}", "data": []}
+    
+    finally:
+        db.close()

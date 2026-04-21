@@ -1,6 +1,6 @@
 from fastapi import FastAPI, File, Form, HTTPException, APIRouter, UploadFile, Depends, Request
 from models.student.model import *
-from core.logic.student.login import student_register, student_login, fetch_user_details
+from core.logic.student.login import forgot_password_api, student_register, student_login, fetch_user_details, user_password_change_api
 from authentication.token_handler import *
 from typing import Optional
 
@@ -107,5 +107,42 @@ async def user_details(
         return data
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+# Note: The user_details endpoint is designed to be flexible and can accept both form data and JSON input. It also requires JWT authentication to ensure that only authorized users can access the endpoint.
+@router.post("/api/user/passwordChange", tags=["UserOperation"], summary="Change user password")
+async def user_password_change(
+    request: PasswordChangeRequest,  # ✅ Pydantic model — FastAPI reads this as JSON body
+    current_user_id: int = Depends(get_current_user)
+):
+    """
+    Accepts JSON input:
+    {
+      "current_password": "current_password",
+      "new_password": "new_secure_password",
+      "confirm_password": "new_secure_password"
+    }
+    """
+    try:
+        return await user_password_change_api(
+            current_password=request.current_password,
+            new_password=request.new_password,
+            confirm_password=request.confirm_password,
+            current_user_id=current_user_id
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+@router.post("/api/user/forgotPassword", tags=["UserOperation"], summary="Forgot password")
+async def forgot_password(request: ForgatPasswordRequest):
+    """
+    Accepts JSON input:
+    {
+      "email": "email",
+    }
+    """
+    try:
+        # Call the forgot password logic function
+        data = await forgot_password_api(request.email)
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

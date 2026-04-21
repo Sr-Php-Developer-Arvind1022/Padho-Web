@@ -22,3 +22,10 @@ class StudentRegister(BaseModel):
 
 class RefreshToken(BaseModel):
     refresh_token: str
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+class ForgatPasswordRequest(BaseModel):
+    email: str
