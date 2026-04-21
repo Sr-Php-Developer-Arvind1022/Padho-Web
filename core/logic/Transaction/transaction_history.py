@@ -1,8 +1,10 @@
 import os
 import logging
 from datetime import datetime
+from unittest import result
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
+import re
 
 
 logger = logging.getLogger(__name__)
@@ -97,12 +99,39 @@ def SaveTransaction(user_id: str, transaction: dict) -> dict:
 
 def GetTransactionHistory(user_id: str, limit: int = 50, skip: int = 0) -> dict:
     try:
+        result = {}
         col = get_db()["transactions"]
         transactions = list(col.find({"user_id": user_id}, {"_id": 0}).skip(skip).limit(limit))
         total_credits = sum(t.get("amount", 0) for t in transactions if t.get("transaction_type") == "credit")
         total_debits = sum(t.get("amount", 0) for t in transactions if t.get("transaction_type") == "debit")
         transactions.append({"total_credits": total_credits})
         transactions.append({"total_debits": total_debits})
+        for t in transactions:
+            items = t.get("items", "")
+    
+            for part in items.split(','):
+                part = part.strip()
+                if not part:
+                    continue
+                
+                qty_match = re.search(r'\d+', part)
+                if not qty_match:
+                    continue
+                
+                qty = int(qty_match.group())
+                name = re.sub(r'\d+', '', part).strip().lower()
+                
+                key = name.split()[-1]
+
+                if key.endswith('es'):
+                    key = key[:-2]
+                elif key.endswith('s'):
+                    key = key[:-1]
+
+                result[key] = result.get(key, 0) + qty
+
+        transactions.append({"item_summary": result})
+
         return {
             "status": "success",
             "transactions": transactions,
