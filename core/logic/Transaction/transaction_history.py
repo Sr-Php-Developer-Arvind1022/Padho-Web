@@ -5,7 +5,7 @@ from unittest import result
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 import re
-
+from bson import ObjectId
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,7 @@ def SaveTransaction(user_id: str, transaction: dict) -> dict:
         transaction["transaction_type"] = transaction_type
         transaction["opening_balance"] = opening_balance
         transaction["closing_balance"] = closing_balance
+        transaction['is_deleted'] = False
         transaction["created_at"] = datetime.utcnow().isoformat()
 
         print(f"Saving transaction: {transaction}")
@@ -101,26 +102,49 @@ def GetTransactionHistory(user_id: str, limit: int = 50, skip: int = 0) -> dict:
     try:
         result = {}
         col = get_db()["transactions"]
-        transactions = list(col.find({"user_id": user_id}, {"_id": 0}).skip(skip).limit(limit))
-        total_credits = sum(t.get("amount", 0) for t in transactions if t.get("transaction_type") == "credit")
-        total_debits = sum(t.get("amount", 0) for t in transactions if t.get("transaction_type") == "debit")
-        transactions.append({"total_credits": total_credits})
-        transactions.append({"total_debits": total_debits})
+
+        #  Filter (exclude deleted)
+        query = {
+            "user_id": user_id,
+            "is_deleted": {"$ne": True}
+        }
+
+        # Fetch transactions
+        transactions = list(
+            col.find(query, {"_id": 0})
+            .skip(skip)
+            .limit(limit)
+        )
+
+        # Totals
+        total_credits = 0
+        total_debits = 0
+
         for t in transactions:
+            amount = float(t.get("amount", 0))
+
+            if t.get("transaction_type") == "credit":
+                total_credits += amount
+            elif t.get("transaction_type") == "debit":
+                total_debits += amount
+
+            # Item parsing (only real transactions)
             items = t.get("items", "")
-    
+            if not items:
+                continue
+
             for part in items.split(','):
                 part = part.strip()
                 if not part:
                     continue
-                
+
                 qty_match = re.search(r'\d+', part)
                 if not qty_match:
                     continue
-                
+
                 qty = int(qty_match.group())
                 name = re.sub(r'\d+', '', part).strip().lower()
-                
+
                 key = name.split()[-1]
 
                 if key.endswith('es'):
@@ -130,15 +154,20 @@ def GetTransactionHistory(user_id: str, limit: int = 50, skip: int = 0) -> dict:
 
                 result[key] = result.get(key, 0) + qty
 
-        transactions.append({"item_summary": result})
-
+        
         return {
             "status": "success",
             "transactions": transactions,
-            "total_count": col.count_documents({"user_id": user_id}),
+            "summary": {
+                "total_credits": total_credits,
+                "total_debits": total_debits,
+                "item_summary": result
+            },
+            "total_count": col.count_documents(query),  # correct count
             "limit": limit,
             "skip": skip
         }
+
     except PyMongoError as e:
         logger.error(f"GetTransactionHistory error: {e}")
         return {
@@ -146,3 +175,64 @@ def GetTransactionHistory(user_id: str, limit: int = 50, skip: int = 0) -> dict:
             "transactions": [],
             "detail": str(e)
         }
+    
+async def DeleteTransaction(user_id: str, transaction_id: str) -> dict:
+    try:
+        db = get_db()
+        trans_col = db["transactions"]
+        wallet_col = db["wallet"]
+
+        # Step 1: Get transaction (ignore already deleted)
+        transaction = trans_col.find_one({
+            "transaction_id": transaction_id,
+            "user_id": user_id,
+            "is_deleted": {"$ne": True}
+        })
+
+        if not transaction:
+            return {"status": "error", "message": "Transaction not found or already deleted"}
+
+        amount = float(transaction.get("amount", 0))
+        trans_type = transaction.get("transaction_type")
+
+        # Step 2: Get wallet
+        wallet = wallet_col.find_one({"user_id": user_id})
+        if not wallet:
+            return {"status": "error", "message": "Wallet not found"}
+
+        balance = float(wallet.get("balance", 0))
+
+        # Step 3: Reverse wallet
+        if trans_type == "credit":
+            new_balance = balance - amount
+        elif trans_type == "debit":
+            new_balance = balance + amount
+        else:
+            return {"status": "error", "message": "Invalid transaction type"}
+
+        # Step 4: Update wallet
+        wallet_col.update_one(
+            {"user_id": user_id},
+            {"$set": {"balance": new_balance}}
+        )
+
+        # Step 5: Soft delete
+        trans_col.update_one(
+            {"_id": transaction["_id"]},
+            {
+                "$set": {
+                    "is_deleted": True,
+                    "deleted_at": datetime.utcnow()
+                }
+            }
+        )
+
+        return {
+            "status": "success",
+            "message": "Transaction soft deleted & wallet updated",
+            "new_balance": new_balance
+        }
+
+    except PyMongoError as e:
+        logger.error(f"DeleteTransaction error: {e}")
+        return {"status": "error", "detail": str(e)}

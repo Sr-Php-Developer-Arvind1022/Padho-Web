@@ -159,7 +159,7 @@ async def get_transaction_history(
         List of transactions for the user
     """
     try:
-        logger.info(f"📜 Fetching transaction history: user={user_id}, limit={limit}, skip={skip}")
+        logger.info(f"Fetching transaction history: user={user_id}, limit={limit}, skip={skip}")
         
         # Import GetTransactionHistory from transaction_history module
         from core.logic.Transaction.transaction_history import GetTransactionHistory
@@ -167,7 +167,7 @@ async def get_transaction_history(
         # Call GetTransactionHistory from transaction_history module
         result = GetTransactionHistory(user_id, limit, skip)
         
-        logger.info(f"✅ Retrieved {len(result.get('transactions', []))} transactions for user={user_id}")
+        logger.info(f"Retrieved {len(result.get('transactions', []))} transactions for user={user_id}")
         
         return {
             "status": "success",
@@ -176,8 +176,48 @@ async def get_transaction_history(
         }
         
     except Exception as e:
-        logger.error(f"❌ Failed to retrieve transaction history: {e}", exc_info=True)
+        logger.error(f"Failed to retrieve transaction history: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to retrieve transaction history: {str(e)}"
+        )
+@router.delete(
+    "/api/transaction/delete",
+    tags=["TransactionOperation"],
+    summary="Delete a transaction"
+)
+async def delete_transaction(
+    user_id: int = Query(...),
+    transaction_id: str = Query(...)
+):
+    """
+    Endpoint to delete a transaction.
+    """
+    try:
+        logger.info(f"Deleting transaction: user={user_id}, transaction_id={transaction_id}")
+        
+        # Import DeleteTransaction from transaction_history module
+        from core.logic.Transaction.transaction_history import DeleteTransaction
+        
+        # Call DeleteTransaction from transaction_history module
+        result = await DeleteTransaction(user_id, transaction_id)
+        
+        if result.get("status") == "success":
+            logger.info(f"Transaction deleted successfully: user={user_id}, transaction_id={transaction_id}")
+            return {
+                "status": "success",
+                "message": "Transaction deleted successfully"
+            }
+        else:
+            logger.warning(f"Failed to delete transaction: {result.get('message')}")
+            return {
+                "status": "error",
+                "message": result.get("message", "Failed to delete transaction")
+            }
+        
+    except Exception as e:
+        logger.error(f"Failed to delete transaction: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete transaction: {str(e)}"
         )
