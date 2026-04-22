@@ -46,8 +46,8 @@ def SaveTransaction(user_id: str, transaction: dict) -> dict:
         current_balance = wallet.get("balance", 0) if wallet else 0
 
         # ---- Insufficient balance check ----
-        if transaction_type == "debit" and current_balance < amount:
-            return {"status": "error", "detail": "Insufficient balance"}
+        # if transaction_type == "debit" and current_balance < amount:
+        #     return {"status": "error", "detail": "Insufficient balance"}
 
         # ---- Opening & Closing Balance ----
         opening_balance = current_balance
