@@ -154,15 +154,14 @@ def GetTransactionHistory(user_id: str, limit: int = 50, skip: int = 0) -> dict:
 
                 result[key] = result.get(key, 0) + qty
 
-        
+        transactions.append({
+            "total_credits": total_credits,
+            "total_debits": total_debits,
+            "item_summary": result
+        })
         return {
             "status": "success",
             "transactions": transactions,
-            "total_credits": total_credits,
-            "total_debits": total_debits,
-            "summary": {
-                "item_summary": result
-            },
             "total_count": col.count_documents(query),  # correct count
             "limit": limit,
             "skip": skip
